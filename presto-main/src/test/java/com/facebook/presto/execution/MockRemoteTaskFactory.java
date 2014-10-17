@@ -14,11 +14,11 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.OutputBuffers;
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.ColumnHandle;
 import com.facebook.presto.metadata.Split;
 import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.operator.TaskContext;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.Node;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.planner.PlanFragment;
@@ -44,13 +44,12 @@ import javax.annotation.concurrent.GuardedBy;
 import java.net.URI;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.execution.StateMachine.StateChangeListener;
-import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.util.Failures.toFailures;
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -68,7 +67,6 @@ public class MockRemoteTaskFactory
 
     public RemoteTask createTableScanTask(Node newNode, List<Split> splits)
     {
-        ConnectorSession session = new ConnectorSession("user", "source", "catalog", "schema", UTC_KEY, Locale.ENGLISH, "address", "agent");
         TaskId taskId = new TaskId(new StageId("test", "1"), "1");
         Symbol symbol = new Symbol("column");
         PlanNodeId tableScanNodeId = new PlanNodeId("test");
@@ -93,19 +91,19 @@ public class MockRemoteTaskFactory
         for (Split sourceSplit : splits) {
             initialSplits.put(sourceId, sourceSplit);
         }
-        return createRemoteTask(session, taskId, newNode, testFragment, initialSplits.build(), OutputBuffers.INITIAL_EMPTY_OUTPUT_BUFFERS);
+        return createRemoteTask(TEST_SESSION, taskId, newNode, testFragment, initialSplits.build(), OutputBuffers.INITIAL_EMPTY_OUTPUT_BUFFERS);
     }
 
     @Override
     public RemoteTask createRemoteTask(
-            ConnectorSession session,
+            Session session,
             TaskId taskId,
             Node node,
             PlanFragment fragment,
             Multimap<PlanNodeId, Split> initialSplits,
             OutputBuffers outputBuffers)
     {
-        return new MockRemoteTask(taskId, fragment, executor, initialSplits);
+        return new MockRemoteTask(taskId, fragment, node.getNodeIdentifier(), executor, initialSplits);
     }
 
     private class MockRemoteTask
@@ -117,6 +115,7 @@ public class MockRemoteTaskFactory
         private final TaskStateMachine taskStateMachine;
         private final TaskContext taskContext;
         private final SharedBuffer sharedBuffer;
+        private final String nodeId;
 
         private final PlanFragment fragment;
 
@@ -128,25 +127,26 @@ public class MockRemoteTaskFactory
 
         public MockRemoteTask(TaskId taskId,
                 PlanFragment fragment,
+                String nodeId,
                 Executor executor,
                 Multimap<PlanNodeId, Split> initialSplits)
         {
             this.taskStateMachine = new TaskStateMachine(checkNotNull(taskId, "taskId is null"), checkNotNull(executor, "executor is null"));
 
-            ConnectorSession session = new ConnectorSession("user", "source", "catalog", "schema", UTC_KEY, Locale.ENGLISH, "address", "agent");
-            this.taskContext = new TaskContext(taskStateMachine, executor, session, new DataSize(256, MEGABYTE), new DataSize(1, MEGABYTE), true);
+            this.taskContext = new TaskContext(taskStateMachine, executor, TEST_SESSION, new DataSize(256, MEGABYTE), new DataSize(1, MEGABYTE), true, true);
 
             this.location = URI.create("fake://task/" + taskId);
 
             this.sharedBuffer = new SharedBuffer(taskId, executor, checkNotNull(new DataSize(1, DataSize.Unit.BYTE), "maxBufferSize is null"));
             this.fragment = checkNotNull(fragment, "fragment is null");
+            this.nodeId = checkNotNull(nodeId, "nodeId is null");
             splits.putAll(initialSplits);
         }
 
         @Override
         public String getNodeId()
         {
-            return "node";
+            return nodeId;
         }
 
         @Override
@@ -188,7 +188,7 @@ public class MockRemoteTaskFactory
         public void noMoreSplits(PlanNodeId sourceId)
         {
             noMoreSplits.add(sourceId);
-            if (noMoreSplits.containsAll(fragment.getSources())) {
+            if (noMoreSplits.containsAll(fragment.getSourceIds())) {
                 taskStateMachine.finished();
             }
         }

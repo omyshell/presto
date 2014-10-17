@@ -14,8 +14,10 @@
 package com.facebook.presto.hive;
 
 import com.facebook.presto.spi.ErrorCode;
+import com.facebook.presto.spi.ErrorCodeSupplier;
 
 public enum HiveErrorCode
+        implements ErrorCodeSupplier
 {
     // Connectors can use error codes starting at EXTERNAL
     HIVE_METASTORE_ERROR(0x0100_0000),
@@ -25,7 +27,8 @@ public enum HiveErrorCode
     HIVE_FILE_NOT_FOUND(0x0100_0004),
     HIVE_UNKNOWN_ERROR(0x0100_0005),
     HIVE_PARTITION_OFFLINE(0x0100_0006),
-    HIVE_BAD_DATA(0x0100_0007);
+    HIVE_BAD_DATA(0x0100_0007),
+    HIVE_PARTITION_SCHEMA_MISMATCH(0x0100_0008);
 
     private final ErrorCode errorCode;
 
@@ -34,6 +37,7 @@ public enum HiveErrorCode
         errorCode = new ErrorCode(code, name());
     }
 
+    @Override
     public ErrorCode toErrorCode()
     {
         return errorCode;

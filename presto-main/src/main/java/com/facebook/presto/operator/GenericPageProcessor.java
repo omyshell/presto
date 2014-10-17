@@ -14,6 +14,8 @@
 package com.facebook.presto.operator;
 
 import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.PageBuilder;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -33,7 +35,8 @@ public class GenericPageProcessor
     @Override
     public int process(ConnectorSession session, Page page, int start, int end, PageBuilder pageBuilder)
     {
-        for (int position = start; position < end; position++) {
+        int position = start;
+        for (; position < end && !pageBuilder.isFull(); position++) {
             if (filterFunction.filter(position, page.getBlocks())) {
                 pageBuilder.declarePosition();
                 for (int i = 0; i < projections.size(); i++) {
@@ -43,6 +46,6 @@ public class GenericPageProcessor
             }
         }
 
-        return end;
+        return position;
     }
 }

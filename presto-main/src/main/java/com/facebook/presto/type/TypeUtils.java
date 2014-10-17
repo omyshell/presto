@@ -15,7 +15,16 @@ package com.facebook.presto.type;
 
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.spi.type.TypeSignature;
 import com.google.common.base.Function;
+import com.google.common.collect.FluentIterable;
+import com.google.common.collect.ImmutableList;
+
+import java.util.List;
+
+import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 public final class TypeUtils
 {
@@ -41,14 +50,41 @@ public final class TypeUtils
         return type.equalTo(leftBlock, leftPosition, rightBlock, rightPosition);
     }
 
-    public static Function<Type, String> nameGetter()
+    public static Function<Type, TypeSignature> typeSignatureGetter()
     {
-        return new Function<Type, String>() {
+        return new Function<Type, TypeSignature>() {
             @Override
-            public String apply(Type input)
+            public TypeSignature apply(Type input)
             {
-                return input.getName();
+                return input.getTypeSignature();
             }
         };
+    }
+
+    public static Function<String, TypeSignature> typeSignatureParser()
+    {
+        return new Function<String, TypeSignature>() {
+            @Override
+            public TypeSignature apply(String input)
+            {
+                return parseTypeSignature(input);
+            }
+        };
+    }
+
+    public static List<Type> resolveTypes(List<TypeSignature> typeNames, final TypeManager typeManager)
+    {
+        return FluentIterable.from(typeNames).transform(new Function<TypeSignature, Type>() {
+            @Override
+            public Type apply(TypeSignature type)
+            {
+                return checkNotNull(typeManager.getType(type), "Type '%s' not found", type);
+            }
+        }).toList();
+    }
+
+    public static TypeSignature parameterizedTypeName(String base, TypeSignature... argumentNames)
+    {
+        return new TypeSignature(base, ImmutableList.copyOf(argumentNames));
     }
 }

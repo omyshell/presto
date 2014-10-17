@@ -96,6 +96,16 @@ STORED AS RCFILE
 TBLPROPERTIES ('RETENTION'='-1')
 ;
 
+CREATE TABLE presto_test_partition_schema_change (
+  t_data STRING,
+  t_extra STRING
+)
+COMMENT 'Presto test partition schema change'
+PARTITIONED BY (ds STRING)
+STORED AS TEXTFILE
+TBLPROPERTIES ('RETENTION'='-1')
+;
+
 CREATE VIEW presto_test_view
 COMMENT 'Presto test view'
 TBLPROPERTIES ('RETENTION'='-1')
@@ -159,15 +169,15 @@ SELECT * FROM tmp_presto_test
 
 ALTER TABLE presto_test_partition_format SET FILEFORMAT RCFILE;
 ALTER TABLE presto_test_partition_format SET SERDE 'org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe';
-ALTER TABLE presto_test_partition_format ADD PARTITION (ds='2012-12-29', file_format='rcfile-text', dummy=3);
-INSERT INTO TABLE presto_test_partition_format PARTITION (ds='2012-12-29', file_format='rcfile-text', dummy=3)
+ALTER TABLE presto_test_partition_format ADD PARTITION (ds='2012-12-29', file_format='rctext', dummy=3);
+INSERT INTO TABLE presto_test_partition_format PARTITION (ds='2012-12-29', file_format='rctext', dummy=3)
 SELECT * FROM tmp_presto_test
 ;
 
 ALTER TABLE presto_test_partition_format SET FILEFORMAT RCFILE;
 ALTER TABLE presto_test_partition_format SET SERDE 'org.apache.hadoop.hive.serde2.columnar.LazyBinaryColumnarSerDe';
-ALTER TABLE presto_test_partition_format ADD PARTITION (ds='2012-12-29', file_format='rcfile-binary', dummy=4);
-INSERT INTO TABLE presto_test_partition_format PARTITION (ds='2012-12-29', file_format='rcfile-binary', dummy=4)
+ALTER TABLE presto_test_partition_format ADD PARTITION (ds='2012-12-29', file_format='rcbinary', dummy=4);
+INSERT INTO TABLE presto_test_partition_format PARTITION (ds='2012-12-29', file_format='rcbinary', dummy=4)
 SELECT * FROM tmp_presto_test
 ;
 
@@ -206,3 +216,8 @@ FROM tmp_presto_test
 ;
 
 DROP TABLE tmp_presto_test;
+
+ALTER TABLE presto_test_partition_schema_change ADD PARTITION (ds='2012-12-29');
+INSERT OVERWRITE TABLE presto_test_partition_schema_change PARTITION (ds='2012-12-29')
+SELECT '123', '456' FROM presto_test_sequence;
+ALTER TABLE presto_test_partition_schema_change REPLACE COLUMNS (t_data BIGINT);

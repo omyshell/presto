@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.spi.PrestoException;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParseException;
@@ -28,6 +29,7 @@ import io.airlift.slice.Slices;
 
 import java.io.IOException;
 
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.fasterxml.jackson.core.JsonFactory.Feature.CANONICALIZE_FIELD_NAMES;
 import static com.fasterxml.jackson.core.JsonToken.END_ARRAY;
 import static com.fasterxml.jackson.core.JsonToken.END_OBJECT;
@@ -143,11 +145,16 @@ public final class JsonExtract
 
     public static <T> JsonExtractor<T> generateExtractor(String path, JsonExtractor<T> rootExtractor)
     {
+        return generateExtractor(path, rootExtractor, false);
+    }
+
+    public static <T> JsonExtractor<T> generateExtractor(String path, JsonExtractor<T> rootExtractor, boolean exceptionOnOutOfBounds)
+    {
         ImmutableList<String> tokens = ImmutableList.copyOf(new JsonPathTokenizer(path));
 
         JsonExtractor<T> jsonExtractor = rootExtractor;
         for (String token : tokens.reverse()) {
-            jsonExtractor = new ObjectFieldJsonExtractor<>(token, jsonExtractor);
+            jsonExtractor = new ObjectFieldJsonExtractor<>(token, jsonExtractor, exceptionOnOutOfBounds);
         }
         return jsonExtractor;
     }
@@ -175,12 +182,18 @@ public final class JsonExtract
         private final SerializedString fieldName;
         private final JsonExtractor<? extends T> delegate;
         private final int index;
+        private final boolean exceptionOnOutOfBounds;
 
         public ObjectFieldJsonExtractor(String fieldName, JsonExtractor<? extends T> delegate)
         {
+            this(fieldName, delegate, false);
+        }
+
+        public ObjectFieldJsonExtractor(String fieldName, JsonExtractor<? extends T> delegate, boolean exceptionOnOutOfBounds)
+        {
             this.fieldName = new SerializedString(checkNotNull(fieldName, "fieldName is null"));
             this.delegate = checkNotNull(delegate, "delegate is null");
-
+            this.exceptionOnOutOfBounds = exceptionOnOutOfBounds;
             this.index = tryParseInt(fieldName, -1);
         }
 
@@ -229,6 +242,9 @@ public final class JsonExtract
                 }
                 if (token == END_ARRAY) {
                     // Index out of bounds
+                    if (exceptionOnOutOfBounds) {
+                        throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Index out of bounds");
+                    }
                     return null;
                 }
                 if (currentIndex == index) {
@@ -239,6 +255,60 @@ public final class JsonExtract
             }
 
             return delegate.extract(jsonParser);
+        }
+    }
+
+    public static class BooleanJsonExtractor
+            implements JsonExtractor<Boolean>
+    {
+        @Override
+        public Boolean extract(JsonParser jsonParser)
+                throws IOException
+        {
+            JsonToken token = jsonParser.getCurrentToken();
+            if (token == null) {
+                throw new JsonParseException("Unexpected end of value", jsonParser.getCurrentLocation());
+            }
+            if (!token.isScalarValue() || token == VALUE_NULL) {
+                return null;
+            }
+            return jsonParser.getBooleanValue();
+        }
+    }
+
+    public static class DoubleJsonExtractor
+            implements JsonExtractor<Double>
+    {
+        @Override
+        public Double extract(JsonParser jsonParser)
+                throws IOException
+        {
+            JsonToken token = jsonParser.getCurrentToken();
+            if (token == null) {
+                throw new JsonParseException("Unexpected end of value", jsonParser.getCurrentLocation());
+            }
+            if (!token.isScalarValue() || token == VALUE_NULL) {
+                return null;
+            }
+            return jsonParser.getDoubleValue();
+        }
+    }
+
+    public static class LongJsonExtractor
+            implements JsonExtractor<Long>
+    {
+        @Override
+        public Long extract(JsonParser jsonParser)
+                throws IOException
+        {
+            JsonToken token = jsonParser.getCurrentToken();
+            if (token == null) {
+                throw new JsonParseException("Unexpected end of value", jsonParser.getCurrentLocation());
+            }
+            if (!token.isScalarValue() || token == VALUE_NULL) {
+                return null;
+            }
+            return jsonParser.getLongValue();
         }
     }
 

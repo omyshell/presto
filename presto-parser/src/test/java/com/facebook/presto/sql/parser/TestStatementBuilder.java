@@ -56,6 +56,16 @@ public class TestStatementBuilder
 
         printStatement("select x is distinct from y from foo where a is not distinct from b");
 
+        printStatement("select x[1] from my_table");
+        printStatement("select x[1][2] from my_table");
+        printStatement("select x[cast(10 * sin(x) as bigint)] from my_table");
+
+        printStatement("select * from unnest(t.my_array)");
+        printStatement("select * from unnest(array[1, 2, 3])");
+        printStatement("select x from unnest(array[1, 2, 3]) t(x)");
+        printStatement("select * from users cross join unnest(friends)");
+        printStatement("select id, friend from users cross join unnest(friends) t(friend)");
+
         printStatement("" +
                 "select depname, empno, salary\n" +
                 ", count(*) over ()\n" +

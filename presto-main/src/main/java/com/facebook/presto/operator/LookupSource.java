@@ -13,9 +13,13 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.block.Block;
 
+import java.io.Closeable;
+
 public interface LookupSource
+        extends Closeable
 {
     int getChannelCount();
 
@@ -24,4 +28,7 @@ public interface LookupSource
     long getNextJoinPosition(long currentPosition);
 
     void appendTo(long position, PageBuilder pageBuilder, int outputChannelOffset);
+
+    @Override
+    void close();
 }

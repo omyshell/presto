@@ -16,8 +16,8 @@ package com.facebook.presto.operator.aggregation;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.block.rle.RunLengthEncodedBlock;
-import com.facebook.presto.operator.Page;
+import com.facebook.presto.testing.RunLengthEncodedBlock;
+import com.facebook.presto.spi.Page;
 import com.google.common.base.Preconditions;
 import org.testng.annotations.Test;
 

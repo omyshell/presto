@@ -58,6 +58,25 @@ public abstract class DefaultTraversalVisitor<R, C>
     }
 
     @Override
+    protected R visitArrayConstructor(ArrayConstructor node, C context)
+    {
+        for (Expression expression : node.getValues()) {
+            process(expression, context);
+        }
+
+        return null;
+    }
+
+    @Override
+    protected R visitSubscriptExpression(SubscriptExpression node, C context)
+    {
+        process(node.getBase(), context);
+        process(node.getIndex(), context);
+
+        return null;
+    }
+
+    @Override
     protected R visitComparisonExpression(ComparisonExpression node, C context)
     {
         process(node.getLeft(), context);
@@ -304,10 +323,8 @@ public abstract class DefaultTraversalVisitor<R, C>
     protected R visitQuerySpecification(QuerySpecification node, C context)
     {
         process(node.getSelect(), context);
-        if (node.getFrom() != null) {
-            for (Relation relation : node.getFrom()) {
-                process(relation, context);
-            }
+        if (node.getFrom().isPresent()) {
+            process(node.getFrom().get(), context);
         }
         if (node.getWhere().isPresent()) {
             process(node.getWhere().get(), context);
@@ -401,6 +418,16 @@ public abstract class DefaultTraversalVisitor<R, C>
 
         if (node.getCriteria().get() instanceof JoinOn) {
             process(((JoinOn) node.getCriteria().get()).getExpression(), context);
+        }
+
+        return null;
+    }
+
+    @Override
+    protected R visitUnnest(Unnest node, C context)
+    {
+        for (Expression expression : node.getExpressions()) {
+            process(expression, context);
         }
 
         return null;

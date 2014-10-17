@@ -18,9 +18,14 @@ import java.util.List;
 public interface TypeManager
 {
     /**
-     * Gets the type with the specified case insensitive name, or null if not found.
+     * Gets the type with the specified signature, or null if not found.
      */
-    Type getType(String typeName);
+    Type getType(TypeSignature signature);
+
+    /**
+     * Gets the type with the specified base type, and the given parameters, or null if not found.
+     */
+    Type getParameterizedType(String baseTypeName, List<TypeSignature> typeParameters);
 
     /**
      * Gets a list of all registered types.

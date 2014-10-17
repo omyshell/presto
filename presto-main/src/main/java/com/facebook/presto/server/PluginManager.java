@@ -18,18 +18,18 @@ import com.facebook.presto.connector.ConnectorManager;
 import com.facebook.presto.connector.system.SystemTablesManager;
 import com.facebook.presto.metadata.FunctionFactory;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.OperatorFactory;
 import com.facebook.presto.spi.ConnectorFactory;
 import com.facebook.presto.spi.Plugin;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.block.BlockEncodingFactory;
+import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.type.TypeRegistry;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Iterators;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Ordering;
 import com.google.inject.Injector;
 import io.airlift.configuration.ConfigurationFactory;
 import io.airlift.http.server.HttpServerInfo;
@@ -39,16 +39,16 @@ import io.airlift.resolver.ArtifactResolver;
 import io.airlift.resolver.DefaultArtifact;
 import org.sonatype.aether.artifact.Artifact;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 import javax.inject.Inject;
 
 import java.io.File;
-import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
-import java.util.Enumeration;
-import java.util.Iterator;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
@@ -153,13 +153,12 @@ public class PluginManager
         pluginsLoaded.set(true);
     }
 
-    @SuppressWarnings("UnusedDeclaration")
     private void loadPlugin(String plugin)
             throws Exception
     {
         log.info("-- Loading plugin %s --", plugin);
         URLClassLoader pluginClassLoader = buildClassLoader(plugin);
-        try (ThreadContextClassLoader threadContextClassLoader = new ThreadContextClassLoader(pluginClassLoader)) {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(pluginClassLoader)) {
             loadPlugin(pluginClassLoader);
         }
         log.info("-- Finished loading plugin %s --", plugin);
@@ -171,7 +170,12 @@ public class PluginManager
         ServiceLoader<Plugin> serviceLoader = ServiceLoader.load(Plugin.class, pluginClassLoader);
         List<Plugin> plugins = ImmutableList.copyOf(serviceLoader);
 
+        if (plugins.isEmpty()) {
+            log.warn("No service providers of type %s", Plugin.class.getName());
+        }
+
         for (Plugin plugin : plugins) {
+            log.info("Installing %s", plugin.getClass().getName());
             installPlugin(plugin);
         }
     }
@@ -183,27 +187,28 @@ public class PluginManager
         plugin.setOptionalConfig(optionalConfig);
 
         for (BlockEncodingFactory<?> blockEncodingFactory : plugin.getServices(BlockEncodingFactory.class)) {
+            log.info("Registering block encoding %s", blockEncodingFactory.getName());
             blockEncodingManager.addBlockEncodingFactory(blockEncodingFactory);
         }
 
         for (Type type : plugin.getServices(Type.class)) {
+            log.info("Registering type %s", type.getTypeSignature());
             typeRegistry.addType(type);
         }
 
         for (ConnectorFactory connectorFactory : plugin.getServices(ConnectorFactory.class)) {
+            log.info("Registering connector %s", connectorFactory.getName());
             connectorManager.addConnectorFactory(connectorFactory);
         }
 
         for (SystemTable systemTable : plugin.getServices(SystemTable.class)) {
+            log.info("Registering system table %s", systemTable.getTableMetadata().getTable());
             systemTablesManager.addTable(systemTable);
         }
 
         for (FunctionFactory functionFactory : plugin.getServices(FunctionFactory.class)) {
+            log.info("Registering functions from %s", functionFactory.getClass().getName());
             metadata.addFunctions(functionFactory.listFunctions());
-        }
-
-        for (OperatorFactory operatorFactory : plugin.getServices(OperatorFactory.class)) {
-            metadata.addOperators(operatorFactory.listOperators());
         }
     }
 
@@ -227,11 +232,11 @@ public class PluginManager
 
         log.debug("Classpath for %s:", pomFile);
         List<URL> urls = new ArrayList<>();
-        urls.add(new File(pomFile.getParentFile(), "target/classes/").toURI().toURL());
-        for (Artifact artifact : artifacts) {
+        for (Artifact artifact : sortedArtifacts(artifacts)) {
             if (artifact.getFile() != null) {
-                log.debug("    %s", artifact.getFile());
-                urls.add(artifact.getFile().toURI().toURL());
+                File file = artifact.getFile().getCanonicalFile();
+                log.debug("    %s", file);
+                urls.add(file.toURI().toURL());
             }
             else {
                 log.debug("  Could not resolve artifact %s", artifact);
@@ -276,7 +281,7 @@ public class PluginManager
     private URLClassLoader createClassLoader(List<URL> urls)
     {
         ClassLoader parent = getClass().getClassLoader();
-        return new SimpleChildFirstClassLoader(urls, parent, HIDDEN_CLASSES, PARENT_FIRST_CLASSES);
+        return new PluginClassLoader(urls, parent, HIDDEN_CLASSES, PARENT_FIRST_CLASSES);
     }
 
     private static List<File> listFiles(File installedPluginsDir)
@@ -284,209 +289,30 @@ public class PluginManager
         if (installedPluginsDir != null && installedPluginsDir.isDirectory()) {
             File[] files = installedPluginsDir.listFiles();
             if (files != null) {
+                Arrays.sort(files);
                 return ImmutableList.copyOf(files);
             }
         }
         return ImmutableList.of();
     }
 
-    private static class SimpleChildFirstClassLoader
-            extends URLClassLoader
+    private static List<Artifact> sortedArtifacts(List<Artifact> artifacts)
     {
-        private final List<String> hiddenClasses;
-        private final List<String> parentFirstClasses;
-        private final List<String> hiddenResources;
-        private final List<String> parentFirstResources;
+        List<Artifact> list = Lists.newArrayList(artifacts);
+        Collections.sort(list, Ordering.natural().nullsLast().onResultOf(artifactFileGetter()));
+        return list;
+    }
 
-        public SimpleChildFirstClassLoader(List<URL> urls,
-                ClassLoader parent,
-                Iterable<String> hiddenClasses,
-                Iterable<String> parentFirstClasses)
+    private static Function<Artifact, Comparable<File>> artifactFileGetter()
+    {
+        return new Function<Artifact, Comparable<File>>()
         {
-            this(urls,
-                    parent,
-                    hiddenClasses,
-                    parentFirstClasses,
-                    Iterables.transform(hiddenClasses, classNameToResource()),
-                    Iterables.transform(parentFirstClasses, classNameToResource()));
-        }
-
-        public SimpleChildFirstClassLoader(List<URL> urls,
-                ClassLoader parent,
-                Iterable<String> hiddenClasses,
-                Iterable<String> parentFirstClasses,
-                Iterable<String> hiddenResources,
-                Iterable<String> parentFirstResources)
-        {
-            // child first requires a parent class loader
-            super(urls.toArray(new URL[urls.size()]), checkNotNull(parent, "parent is null"));
-            this.hiddenClasses = ImmutableList.copyOf(hiddenClasses);
-            this.parentFirstClasses = ImmutableList.copyOf(parentFirstClasses);
-            this.hiddenResources = ImmutableList.copyOf(hiddenResources);
-            this.parentFirstResources = ImmutableList.copyOf(parentFirstResources);
-        }
-
-        @Override
-        protected Class<?> loadClass(String name, boolean resolve)
-                throws ClassNotFoundException
-        {
-            // grab the magic lock
-            synchronized (getClassLoadingLock(name)) {
-                // Check if class is in the loaded classes cache
-                Class<?> cachedClass = findLoadedClass(name);
-                if (cachedClass != null) {
-                    return resolveClass(cachedClass, resolve);
-                }
-
-                // If this is not a parent first class, look for the class locally
-                if (!isParentFirstClass(name)) {
-                    try {
-                        Class<?> clazz = findClass(name);
-                        return resolveClass(clazz, resolve);
-                    }
-                    catch (ClassNotFoundException ignored) {
-                        // not a local class
-                    }
-                }
-
-                // Check parent class loaders, unless this is a hidden class
-                if (!isHiddenClass(name)) {
-                    try {
-                        Class<?> clazz = getParent().loadClass(name);
-                        return resolveClass(clazz, resolve);
-                    }
-                    catch (ClassNotFoundException ignored) {
-                        // this parent didn't have the class
-                    }
-                }
-
-                // If this is a parent first class, now look for the class locally
-                if (isParentFirstClass(name)) {
-                    Class<?> clazz = findClass(name);
-                    return resolveClass(clazz, resolve);
-                }
-
-                throw new ClassNotFoundException(name);
-            }
-        }
-
-        private Class<?> resolveClass(Class<?> clazz, boolean resolve)
-        {
-            if (resolve) {
-                resolveClass(clazz);
-            }
-            return clazz;
-        }
-
-        private boolean isParentFirstClass(String name)
-        {
-            for (String nonOverridableClass : parentFirstClasses) {
-                // todo maybe make this more precise and only match base package
-                if (name.startsWith(nonOverridableClass)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private boolean isHiddenClass(String name)
-        {
-            for (String hiddenClass : hiddenClasses) {
-                // todo maybe make this more precise and only match base package
-                if (name.startsWith(hiddenClass)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        @Override
-        public URL getResource(String name)
-        {
-            // If this is not a parent first resource, check local resources first
-            if (!isParentFirstResource(name)) {
-                URL url = findResource(name);
-                if (url != null) {
-                    return url;
-                }
-            }
-
-            // Check parent class loaders
-            if (!isHiddenResource(name)) {
-                URL url = getParent().getResource(name);
-                if (url != null) {
-                    return url;
-                }
-            }
-
-            // If this is a parent first resource, now check local resources
-            if (isParentFirstResource(name)) {
-                URL url = findResource(name);
-                if (url != null) {
-                    return url;
-                }
-            }
-
-            return null;
-        }
-
-        @Override
-        public Enumeration<URL> getResources(String name)
-                throws IOException
-        {
-            List<Iterator<URL>> resources = new ArrayList<>();
-
-            // If this is not a parent first resource, add resources from local urls first
-            if (!isParentFirstResource(name)) {
-                Iterator<URL> myResources = Iterators.forEnumeration(findResources(name));
-                resources.add(myResources);
-            }
-
-            // Add parent resources
-            if (!isHiddenResource(name)) {
-                Iterator<URL> parentResources = Iterators.forEnumeration(getParent().getResources(name));
-                resources.add(parentResources);
-            }
-
-            // If this is a parent first resource, now add resources from local urls
-            if (isParentFirstResource(name)) {
-                Iterator<URL> myResources = Iterators.forEnumeration(findResources(name));
-                resources.add(myResources);
-            }
-
-            return Iterators.asEnumeration(Iterators.concat(resources.iterator()));
-        }
-
-        private boolean isParentFirstResource(String name)
-        {
-            for (String nonOverridableResource : parentFirstResources) {
-                if (name.startsWith(nonOverridableResource)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private boolean isHiddenResource(String name)
-        {
-            for (String hiddenResource : hiddenResources) {
-                if (name.startsWith(hiddenResource)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static Function<String, String> classNameToResource()
-        {
-            return new Function<String, String>()
+            @Nullable
+            @Override
+            public Comparable<File> apply(Artifact input)
             {
-                @Override
-                public String apply(String className)
-                {
-                    return className.replace('.', '/');
-                }
-            };
-        }
+                return input.getFile();
+            }
+        };
     }
 }

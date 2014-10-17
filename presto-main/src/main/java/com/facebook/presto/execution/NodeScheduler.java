@@ -63,6 +63,7 @@ public class NodeScheduler
     private final int maxSplitsPerNode;
     private final int maxSplitsPerNodePerTaskWhenFull;
     private final NodeTaskMap nodeTaskMap;
+    private final boolean doubleScheduling;
 
     @Inject
     public NodeScheduler(NodeManager nodeManager, NodeSchedulerConfig config, NodeTaskMap nodeTaskMap)
@@ -71,6 +72,7 @@ public class NodeScheduler
         this.minCandidates = config.getMinCandidates();
         this.locationAwareScheduling = config.isLocationAwareSchedulingEnabled();
         this.includeCoordinator = config.isIncludeCoordinator();
+        this.doubleScheduling = config.isMultipleTasksPerNodeEnabled();
         this.maxSplitsPerNode = config.getMaxSplitsPerNode();
         this.maxSplitsPerNodePerTaskWhenFull = config.getMaxPendingSplitsPerNodePerTask();
         this.nodeTaskMap = checkNotNull(nodeTaskMap, "nodeTaskMap is null");
@@ -103,7 +105,7 @@ public class NodeScheduler
         scheduleRandom.set(0);
     }
 
-    public NodeSelector createNodeSelector(final String dataSourceName, Map<Node, RemoteTask> taskMap)
+    public NodeSelector createNodeSelector(final String dataSourceName)
     {
         // this supplier is thread-safe. TODO: this logic should probably move to the scheduler since the choice of which node to run in should be
         // done as close to when the the split is about to be scheduled
@@ -151,18 +153,16 @@ public class NodeScheduler
             }
         }, 5, TimeUnit.SECONDS);
 
-        return new NodeSelector(nodeMap, taskMap);
+        return new NodeSelector(nodeMap);
     }
 
     public class NodeSelector
     {
         private final AtomicReference<Supplier<NodeMap>> nodeMap;
-        private final Map<Node, RemoteTask> taskMap;
 
-        public NodeSelector(Supplier<NodeMap> nodeMap, Map<Node, RemoteTask> taskMap)
+        public NodeSelector(Supplier<NodeMap> nodeMap)
         {
             this.nodeMap = new AtomicReference<>(nodeMap);
-            this.taskMap = taskMap;
         }
 
         public void lockDownNodes()
@@ -185,7 +185,11 @@ public class NodeScheduler
         {
             checkArgument(limit > 0, "limit must be at least 1");
 
-            return ImmutableList.copyOf(FluentIterable.from(lazyShuffle(nodeMap.get().get().getNodesByHostAndPort().values())).limit(limit));
+            FluentIterable<Node> nodes = FluentIterable.from(lazyShuffle(nodeMap.get().get().getNodesByHostAndPort().values()));
+            if (doubleScheduling) {
+                nodes = nodes.cycle();
+            }
+            return nodes.limit(limit).toList();
         }
 
         /**
@@ -196,13 +200,23 @@ public class NodeScheduler
          * @return a multimap from node to splits only for splits for which we could identify a node to schedule on.
          *      If we cannot find an assignment for a split, it is not included in the map.
          */
-        public Multimap<Node, Split> computeAssignments(Set<Split> splits)
+        public Multimap<Node, Split> computeAssignments(Set<Split> splits, Iterable<RemoteTask> existingTasks)
         {
             Multimap<Node, Split> assignment = HashMultimap.create();
             Map<Node, Integer> assignmentCount = new HashMap<>();
 
             // maintain a temporary local cache of partitioned splits on the node
             Map<Node, Integer> splitCountByNode = new HashMap<>();
+
+            Map<String, Integer> queuedSplitCountByNode = new HashMap<>();
+
+            for (RemoteTask task : existingTasks) {
+                String nodeId = task.getNodeId();
+                if (!queuedSplitCountByNode.containsKey(nodeId)) {
+                    queuedSplitCountByNode.put(nodeId, 0);
+                }
+                queuedSplitCountByNode.put(nodeId, queuedSplitCountByNode.get(nodeId) + task.getQueuedPartitionedSplitCount());
+            }
 
             for (Split split : splits) {
                 List<Node> candidateNodes;
@@ -235,8 +249,10 @@ public class NodeScheduler
                 if (chosenNode == null) {
                     for (Node node : candidateNodes) {
                         int assignedSplitCount = assignmentCount.containsKey(node) ? assignmentCount.get(node) : 0;
-                        RemoteTask remoteTask = taskMap.get(node);
-                        int queuedSplitCount = remoteTask == null ? 0 : remoteTask.getQueuedPartitionedSplitCount();
+                        int queuedSplitCount = 0;
+                        if (queuedSplitCountByNode.containsKey(node.getNodeIdentifier())) {
+                            queuedSplitCount = queuedSplitCountByNode.get(node.getNodeIdentifier());
+                        }
                         int totalSplitCount = queuedSplitCount + assignedSplitCount;
                         if (totalSplitCount < min && totalSplitCount < maxSplitsPerNodePerTaskWhenFull) {
                             chosenNode = node;

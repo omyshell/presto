@@ -16,7 +16,6 @@ package com.facebook.presto.sql.planner;
 import com.facebook.presto.metadata.ColumnHandle;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.OperatorNotFoundException;
-import com.facebook.presto.metadata.OperatorType;
 import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.Domain;
@@ -24,7 +23,6 @@ import com.facebook.presto.spi.Marker;
 import com.facebook.presto.spi.Range;
 import com.facebook.presto.spi.TupleDomain;
 import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
 import com.facebook.presto.sql.planner.PlanFragment.OutputPartitioning;
 import com.facebook.presto.sql.planner.PlanFragment.PlanDistribution;
 import com.facebook.presto.sql.planner.plan.AggregationNode;
@@ -41,7 +39,7 @@ import com.facebook.presto.sql.planner.plan.PlanFragmentId;
 import com.facebook.presto.sql.planner.plan.PlanNode;
 import com.facebook.presto.sql.planner.plan.PlanVisitor;
 import com.facebook.presto.sql.planner.plan.ProjectNode;
-import com.facebook.presto.sql.planner.plan.RowNumberLimitNode;
+import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SampleNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.planner.plan.SinkNode;
@@ -52,6 +50,7 @@ import com.facebook.presto.sql.planner.plan.TableWriterNode;
 import com.facebook.presto.sql.planner.plan.TopNNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
 import com.facebook.presto.sql.planner.plan.UnionNode;
+import com.facebook.presto.sql.planner.plan.UnnestNode;
 import com.facebook.presto.sql.planner.plan.ValuesNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.facebook.presto.sql.tree.ComparisonExpression;
@@ -77,6 +76,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.planner.DomainUtils.simplifyDomain;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static java.lang.String.format;
@@ -321,15 +321,19 @@ public class PlanPrinter
         }
 
         @Override
-        public Void visitRowNumberLimit(final RowNumberLimitNode node, Integer indent)
+        public Void visitRowNumber(final RowNumberNode node, Integer indent)
         {
             List<String> partitionBy = Lists.transform(node.getPartitionBy(), Functions.toStringFunction());
             List<String> args = new ArrayList<>();
             if (!partitionBy.isEmpty()) {
-                args.add(format("partition by (%s)", Joiner.on(", ").join(partitionBy)));
+                args.add(format("partition by (%s) ", Joiner.on(", ").join(partitionBy)));
             }
 
-            print(indent, "- RowNumberLimit[%s limit=%s] => [%s]", Joiner.on(", ").join(args), node.getMaxRowCountPerPartition(), formatOutputs(node.getOutputSymbols()));
+            if (node.getMaxRowCountPerPartition().isPresent()) {
+                args.add(format("limit (%s) ", node.getMaxRowCountPerPartition().get()));
+            }
+
+            print(indent, "- RowNumber[%s] => [%s]", Joiner.on(", ").join(args), formatOutputs(node.getOutputSymbols()));
 
             print(indent + 2, "%s := %s", node.getRowNumberSymbol(), "row_number()");
             return processChildren(node, indent + 1);
@@ -386,6 +390,14 @@ public class PlanPrinter
                 }
                 print(indent + 2, "%s := %s", entry.getKey(), entry.getValue());
             }
+
+            return processChildren(node, indent + 1);
+        }
+
+        @Override
+        public Void visitUnnest(UnnestNode node, Integer indent)
+        {
+            print(indent, "- Unnest [replicate=%s, unnest=%s] => [%s]", formatOutputs(node.getReplicateSymbols()), formatOutputs(node.getUnnestSymbols().keySet()), formatOutputs(node.getOutputSymbols()));
 
             return processChildren(node, indent + 1);
         }
@@ -514,7 +526,7 @@ public class PlanPrinter
             return null;
         }
 
-        private String formatOutputs(List<Symbol> symbols)
+        private String formatOutputs(Iterable<Symbol> symbols)
         {
             return Joiner.on(", ").join(Iterables.transform(symbols, new Function<Symbol, String>()
             {
@@ -537,7 +549,7 @@ public class PlanPrinter
 
         try {
             ColumnMetadata columnMetadata  = metadata.getColumnMetadata(table, column);
-            MethodHandle method = metadata.getExactOperator(OperatorType.CAST, VarcharType.VARCHAR, ImmutableList.of(columnMetadata.getType()))
+            MethodHandle method = metadata.getFunctionRegistry().getCoercion(columnMetadata.getType(), VARCHAR)
                     .getMethodHandle();
 
             for (Range range : domain.getRanges()) {

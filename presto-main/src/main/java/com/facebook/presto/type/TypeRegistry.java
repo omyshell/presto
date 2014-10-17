@@ -15,6 +15,7 @@ package com.facebook.presto.type;
 
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.spi.type.TypeSignature;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
@@ -39,11 +40,15 @@ import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
 import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.type.ArrayParametricType.ARRAY;
 import static com.facebook.presto.type.ColorType.COLOR;
 import static com.facebook.presto.type.JsonPathType.JSON_PATH;
+import static com.facebook.presto.type.JsonType.JSON;
 import static com.facebook.presto.type.LikePatternType.LIKE_PATTERN;
+import static com.facebook.presto.type.MapParametricType.MAP;
 import static com.facebook.presto.type.RegexpType.REGEXP;
 import static com.facebook.presto.type.UnknownType.UNKNOWN;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
@@ -51,7 +56,8 @@ import static com.google.common.base.Preconditions.checkState;
 public final class TypeRegistry
         implements TypeManager
 {
-    private final ConcurrentMap<String, Type> types = new ConcurrentHashMap<>();
+    private final ConcurrentMap<TypeSignature, Type> types = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, ParametricType> parametricTypes = new ConcurrentHashMap<>();
 
     public TypeRegistry()
     {
@@ -64,7 +70,7 @@ public final class TypeRegistry
         checkNotNull(types, "types is null");
 
         // Manually register UNKNOWN type without a verifyTypeClass call since it is a special type that can not be used by functions
-        this.types.put(UNKNOWN.getName().toLowerCase(), UNKNOWN);
+        this.types.put(UNKNOWN.getTypeSignature(), UNKNOWN);
 
         // always add the built-in types; Presto will not function without these
         addType(BOOLEAN);
@@ -84,6 +90,9 @@ public final class TypeRegistry
         addType(LIKE_PATTERN);
         addType(JSON_PATH);
         addType(COLOR);
+        addType(JSON);
+        addParametricType(ARRAY);
+        addParametricType(MAP);
 
         for (Type type : types) {
             addType(type);
@@ -91,9 +100,39 @@ public final class TypeRegistry
     }
 
     @Override
-    public Type getType(String typeName)
+    public Type getType(TypeSignature signature)
     {
-        return types.get(typeName.toLowerCase());
+        Type type = types.get(signature);
+        if (type == null) {
+            instantiateParametricType(signature);
+            return types.get(signature);
+        }
+        return type;
+    }
+
+    @Override
+    public Type getParameterizedType(String baseTypeName, List<TypeSignature> typeParameters)
+    {
+        return getType(new TypeSignature(baseTypeName, typeParameters));
+    }
+
+    private synchronized void instantiateParametricType(TypeSignature signature)
+    {
+        if (types.containsKey(signature)) {
+            return;
+        }
+        ImmutableList.Builder<Type> parameterTypes = ImmutableList.builder();
+        for (TypeSignature parameter : signature.getParameters()) {
+            parameterTypes.add(getType(parameter));
+        }
+
+        ParametricType parametricType = parametricTypes.get(signature.getBase());
+        if (parametricType == null) {
+            return;
+        }
+        Type instantiatedType = parametricType.createType(parameterTypes.build());
+        checkState(instantiatedType.getTypeSignature().equals(signature), "Instantiated parametric type name (%s) does not match expected name (%s)", instantiatedType, signature);
+        addType(instantiatedType);
     }
 
     @Override
@@ -105,8 +144,15 @@ public final class TypeRegistry
     public void addType(Type type)
     {
         verifyTypeClass(type);
-        Type existingType = types.putIfAbsent(type.getName().toLowerCase(), type);
-        checkState(existingType == null || existingType.equals(type), "Type %s is already registered", type.getName());
+        Type existingType = types.putIfAbsent(type.getTypeSignature(), type);
+        checkState(existingType == null || existingType.equals(type), "Type %s is already registered", type);
+    }
+
+    public void addParametricType(ParametricType parametricType)
+    {
+        checkArgument(!parametricTypes.containsKey(parametricType.getName()),
+                "Parametric type already registered: %s", parametricType.getName());
+        parametricTypes.putIfAbsent(parametricType.getName(), parametricType);
     }
 
     public static void verifyTypeClass(Type type)

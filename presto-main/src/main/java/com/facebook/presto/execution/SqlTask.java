@@ -14,11 +14,11 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.OutputBuffers;
+import com.facebook.presto.Session;
 import com.facebook.presto.TaskSource;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.operator.TaskContext;
 import com.facebook.presto.operator.TaskStats;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.sql.planner.PlanFragment;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.util.SetThreadName;
@@ -137,10 +137,9 @@ public class SqlTask
 
     private TaskInfo createTaskInfo(TaskHolder taskHolder)
     {
-        TaskInfo finalTaskInfo = taskHolder.getFinalTaskInfo();
-        if (finalTaskInfo != null) {
-            return finalTaskInfo;
-        }
+        // Always return a new TaskInfo with a larger version number;
+        // otherwise a client will not accept the update
+        long versionNumber = nextTaskInfoVersion.getAndIncrement();
 
         TaskState state = taskStateMachine.getState();
         List<ExecutionFailureInfo> failures = ImmutableList.of();
@@ -150,20 +149,27 @@ public class SqlTask
 
         TaskStats taskStats;
         Set<PlanNodeId> noMoreSplits;
-        SqlTaskExecution taskExecution = taskHolder.getTaskExecution();
-        if (taskExecution != null) {
-            taskStats = taskExecution.getTaskContext().getTaskStats();
-            noMoreSplits = taskExecution.getNoMoreSplits();
+
+        TaskInfo finalTaskInfo = taskHolder.getFinalTaskInfo();
+        if (finalTaskInfo != null) {
+            taskStats = finalTaskInfo.getStats();
+            noMoreSplits = finalTaskInfo.getNoMoreSplits();
         }
         else {
-            taskStats = new TaskStats(taskStateMachine.getCreatedTime());
-            noMoreSplits = ImmutableSet.of();
+            SqlTaskExecution taskExecution = taskHolder.getTaskExecution();
+            if (taskExecution != null) {
+                taskStats = taskExecution.getTaskContext().getTaskStats();
+                noMoreSplits = taskExecution.getNoMoreSplits();
+            }
+            else {
+                taskStats = new TaskStats(taskStateMachine.getCreatedTime());
+                noMoreSplits = ImmutableSet.of();
+            }
         }
 
-        // todo is the version number stuff good?
         return new TaskInfo(
                 taskStateMachine.getTaskId(),
-                nextTaskInfoVersion.getAndIncrement(),
+                versionNumber,
                 state,
                 location,
                 lastHeartbeat.get(),
@@ -198,7 +204,7 @@ public class SqlTask
         });
     }
 
-    public TaskInfo updateTask(ConnectorSession session, PlanFragment fragment, List<TaskSource> sources, OutputBuffers outputBuffers)
+    public TaskInfo updateTask(Session session, PlanFragment fragment, List<TaskSource> sources, OutputBuffers outputBuffers)
     {
         // assure the task execution is only created once
         SqlTaskExecution taskExecution;
@@ -224,7 +230,7 @@ public class SqlTask
         return getTaskInfo();
     }
 
-    public ListenableFuture<BufferResult> getTaskResults(String outputName, long startingSequenceId, DataSize maxSize)
+    public ListenableFuture<BufferResult> getTaskResults(TaskId outputName, long startingSequenceId, DataSize maxSize)
     {
         checkNotNull(outputName, "outputName is null");
         checkArgument(maxSize.toBytes() > 0, "maxSize must be at least 1 byte");
@@ -234,7 +240,7 @@ public class SqlTask
         return sharedBuffer.get(outputName, startingSequenceId, maxSize);
     }
 
-    public TaskInfo abortTaskResults(String outputId)
+    public TaskInfo abortTaskResults(TaskId outputId)
     {
         checkNotNull(outputId, "outputId is null");
 

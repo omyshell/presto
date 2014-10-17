@@ -304,6 +304,16 @@ public abstract class AstVisitor<R, C>
         return visitExpression(node, context);
     }
 
+    protected R visitArrayConstructor(ArrayConstructor node, C context)
+    {
+        return visitExpression(node, context);
+    }
+
+    protected R visitSubscriptExpression(SubscriptExpression node, C context)
+    {
+        return visitExpression(node, context);
+    }
+
     protected R visitLongLiteral(LongLiteral node, C context)
     {
         return visitLiteral(node, context);
@@ -327,6 +337,11 @@ public abstract class AstVisitor<R, C>
     protected R visitTable(Table node, C context)
     {
         return visitQueryBody(node, context);
+    }
+
+    protected R visitUnnest(Unnest node, C context)
+    {
+        return visitRelation(node, context);
     }
 
     protected R visitValues(Values node, C context)

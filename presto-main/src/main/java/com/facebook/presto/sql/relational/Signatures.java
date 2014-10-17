@@ -13,10 +13,11 @@
  */
 package com.facebook.presto.sql.relational;
 
+import com.facebook.presto.metadata.OperatorType;
 import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.type.BooleanType;
+import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.spi.type.TypeSignature;
 import com.facebook.presto.sql.tree.ArithmeticExpression;
 import com.facebook.presto.sql.tree.ComparisonExpression;
 import com.facebook.presto.sql.tree.LogicalBinaryExpression;
@@ -26,15 +27,20 @@ import com.google.common.collect.Lists;
 
 import java.util.List;
 
+import static com.facebook.presto.metadata.FunctionRegistry.mangleOperatorName;
+import static com.facebook.presto.metadata.OperatorType.SUBSCRIPT;
 import static com.facebook.presto.metadata.Signature.internalFunction;
-import static com.facebook.presto.type.TypeUtils.nameGetter;
+import static com.facebook.presto.metadata.Signature.internalOperator;
+import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.sql.tree.ArrayConstructor.ARRAY_CONSTRUCTOR;
+import static com.facebook.presto.type.TypeUtils.typeSignatureGetter;
 
 public final class Signatures
 {
     public static final String IF = "IF";
     public static final String NULL_IF = "NULL_IF";
     public static final String SWITCH = "SWITCH";
-    public static final String CAST = "CAST";
+    public static final String CAST = mangleOperatorName("CAST");
     public static final String TRY_CAST = "TRY_CAST";
     public static final String IS_NULL = "IS_NULL";
     public static final String COALESCE = "COALESCE";
@@ -47,89 +53,110 @@ public final class Signatures
     // **************** sql operators ****************
     public static Signature notSignature()
     {
-        return new Signature("not", BooleanType.NAME, ImmutableList.of(BooleanType.NAME));
+        return new Signature("not", StandardTypes.BOOLEAN, ImmutableList.of(StandardTypes.BOOLEAN));
     }
 
     public static Signature betweenSignature(Type valueType, Type minType, Type maxType)
     {
-        return internalFunction("BETWEEN", BooleanType.NAME, valueType.getName(), minType.getName(), maxType.getName());
+        return internalOperator("BETWEEN", parseTypeSignature(StandardTypes.BOOLEAN), valueType.getTypeSignature(), minType.getTypeSignature(), maxType.getTypeSignature());
     }
 
     public static Signature likeSignature()
     {
-        return internalFunction("LIKE", BooleanType.NAME, VarcharType.NAME, LikePatternType.NAME);
+        return internalFunction("LIKE", StandardTypes.BOOLEAN, StandardTypes.VARCHAR, LikePatternType.NAME);
     }
 
     public static Signature likePatternSignature()
     {
-        return internalFunction("LIKE_PATTERN", LikePatternType.NAME, VarcharType.NAME, VarcharType.NAME);
+        return internalFunction("LIKE_PATTERN", LikePatternType.NAME, StandardTypes.VARCHAR, StandardTypes.VARCHAR);
     }
 
     public static Signature castSignature(Type returnType, Type valueType)
     {
-        return internalFunction(CAST, returnType.getName(), valueType.getName());
+        // Name has already been mangled, so don't use internalOperator
+        return internalFunction(CAST, returnType.getTypeSignature(), valueType.getTypeSignature());
     }
 
     public static Signature tryCastSignature(Type returnType, Type valueType)
     {
-        return internalFunction(TRY_CAST, returnType.getName(), valueType.getName());
+        return internalFunction(TRY_CAST, returnType.getTypeSignature(), valueType.getTypeSignature());
     }
 
     public static Signature logicalExpressionSignature(LogicalBinaryExpression.Type expressionType)
     {
-        return internalFunction(expressionType.name(), BooleanType.NAME, BooleanType.NAME, BooleanType.NAME);
+        return internalFunction(expressionType.name(), StandardTypes.BOOLEAN, StandardTypes.BOOLEAN, StandardTypes.BOOLEAN);
     }
 
     public static Signature arithmeticNegationSignature(Type returnType, Type valueType)
     {
-        return internalFunction("NEGATION", returnType.getName(), valueType.getName());
+        return internalOperator("NEGATION", returnType.getTypeSignature(), valueType.getTypeSignature());
     }
 
     public static Signature arithmeticExpressionSignature(ArithmeticExpression.Type expressionType, Type returnType, Type leftType, Type rightType)
     {
-        return internalFunction(expressionType.name(), returnType.getName(), leftType.getName(), rightType.getName());
+        return internalOperator(expressionType.name(), returnType.getTypeSignature(), leftType.getTypeSignature(), rightType.getTypeSignature());
+    }
+
+    public static Signature subscriptSignature(Type returnType, Type leftType, Type rightType)
+    {
+        return internalOperator(SUBSCRIPT.name(), returnType.getTypeSignature(), leftType.getTypeSignature(), rightType.getTypeSignature());
+    }
+
+    public static Signature arrayConstructorSignature(Type returnType, List<? extends Type> argumentTypes)
+    {
+        return internalFunction(ARRAY_CONSTRUCTOR, returnType.getTypeSignature(), Lists.transform(argumentTypes, typeSignatureGetter()));
+    }
+
+    public static Signature arrayConstructorSignature(TypeSignature returnType, List<TypeSignature> argumentTypes)
+    {
+        return internalFunction(ARRAY_CONSTRUCTOR, returnType, argumentTypes);
     }
 
     public static Signature comparisonExpressionSignature(ComparisonExpression.Type expressionType, Type leftType, Type rightType)
     {
-        return internalFunction(expressionType.name(), BooleanType.NAME, leftType.getName(), rightType.getName());
+        for (OperatorType operatorType : OperatorType.values()) {
+            if (operatorType.name().equals(expressionType.name())) {
+                return internalOperator(expressionType.name(), parseTypeSignature(StandardTypes.BOOLEAN), leftType.getTypeSignature(), rightType.getTypeSignature());
+            }
+        }
+        return internalFunction(expressionType.name(), parseTypeSignature(StandardTypes.BOOLEAN), leftType.getTypeSignature(), rightType.getTypeSignature());
     }
 
     // **************** special forms (lazy evaluation, etc) ****************
     public static Signature ifSignature(Type returnType)
     {
-        return new Signature(IF, returnType.getName());
+        return new Signature(IF, returnType.getTypeSignature());
     }
 
     public static Signature nullIfSignature(Type returnType, Type firstType, Type secondType)
     {
-        return new Signature(NULL_IF, returnType.getName(), firstType.getName(), secondType.getName());
+        return new Signature(NULL_IF, returnType.getTypeSignature(), firstType.getTypeSignature(), secondType.getTypeSignature());
     }
 
     public static Signature switchSignature(Type returnType)
     {
-        return new Signature(SWITCH, returnType.getName());
+        return new Signature(SWITCH, returnType.getTypeSignature());
     }
 
     public static Signature whenSignature(Type returnType)
     {
-        return new Signature("WHEN", returnType.getName());
+        return new Signature("WHEN", returnType.getTypeSignature());
     }
 
     // **************** functions that require varargs and/or complex types (e.g., lists) ****************
     public static Signature inSignature()
     {
-        return internalFunction(IN, BooleanType.NAME);
+        return internalFunction(IN, StandardTypes.BOOLEAN);
     }
 
     // **************** functions that need to do special null handling ****************
     public static Signature isNullSignature(Type argumentType)
     {
-        return internalFunction(IS_NULL, BooleanType.NAME, argumentType.getName());
+        return internalFunction(IS_NULL, parseTypeSignature(StandardTypes.BOOLEAN), argumentType.getTypeSignature());
     }
 
     public static Signature coalesceSignature(Type returnType, List<Type> argumentTypes)
     {
-        return internalFunction(COALESCE, returnType.getName(), Lists.transform(argumentTypes, nameGetter()));
+        return internalFunction(COALESCE, returnType.getTypeSignature(), Lists.transform(argumentTypes, typeSignatureGetter()));
     }
 }

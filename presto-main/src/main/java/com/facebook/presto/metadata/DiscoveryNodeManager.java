@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.metadata;
 
+import com.facebook.presto.connector.system.SystemTablesManager;
 import com.facebook.presto.failureDetector.FailureDetector;
 import com.facebook.presto.spi.Node;
 import com.facebook.presto.util.IterableTransformer;
@@ -35,12 +36,12 @@ import java.net.URISyntaxException;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import static com.facebook.presto.connector.system.SystemSplitManager.SYSTEM_DATASOURCE;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Predicates.in;
 import static com.google.common.base.Predicates.not;
 import static java.util.Arrays.asList;
+import static java.util.Locale.ENGLISH;
 
 @ThreadSafe
 public final class DiscoveryNodeManager
@@ -113,14 +114,14 @@ public final class DiscoveryNodeManager
                     // record available active nodes organized by data source
                     String dataSources = service.getProperties().get("datasources");
                     if (dataSources != null) {
-                        dataSources = dataSources.toLowerCase();
+                        dataSources = dataSources.toLowerCase(ENGLISH);
                         for (String dataSource : DATASOURCES_SPLITTER.split(dataSources)) {
                             byDataSourceBuilder.put(dataSource, node);
                         }
                     }
 
                     // always add system data source
-                    byDataSourceBuilder.put(SYSTEM_DATASOURCE, node);
+                    byDataSourceBuilder.put(SystemTablesManager.CONNECTOR_ID, node);
                 }
                 else {
                     inactiveNodesBuilder.add(node);

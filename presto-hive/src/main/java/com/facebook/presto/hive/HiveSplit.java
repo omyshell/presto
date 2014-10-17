@@ -16,6 +16,7 @@ package com.facebook.presto.hive;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
+import com.facebook.presto.spi.TupleDomain;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Objects;
@@ -42,6 +43,8 @@ public class HiveSplit
     private final String table;
     private final String partitionName;
     private final ConnectorSession session;
+    private final TupleDomain<HiveColumnHandle> tupleDomain;
+    private final boolean forceLocalScheduling;
 
     @JsonCreator
     public HiveSplit(
@@ -55,9 +58,10 @@ public class HiveSplit
             @JsonProperty("schema") Properties schema,
             @JsonProperty("partitionKeys") List<HivePartitionKey> partitionKeys,
             @JsonProperty("addresses") List<HostAddress> addresses,
-            @JsonProperty("session") ConnectorSession session)
+            @JsonProperty("forceLocalScheduling") boolean forceLocalScheduling,
+            @JsonProperty("session") ConnectorSession session,
+            @JsonProperty("tupleDomain") TupleDomain<HiveColumnHandle> tupleDomain)
     {
-        this.session = session;
         checkNotNull(clientId, "clientId is null");
         checkArgument(start >= 0, "start must be positive");
         checkArgument(length >= 0, "length must be positive");
@@ -68,6 +72,7 @@ public class HiveSplit
         checkNotNull(schema, "schema is null");
         checkNotNull(partitionKeys, "partitionKeys is null");
         checkNotNull(addresses, "addresses is null");
+        checkNotNull(tupleDomain, "tupleDomain is null");
 
         this.clientId = clientId;
         this.database = database;
@@ -79,6 +84,9 @@ public class HiveSplit
         this.schema = schema;
         this.partitionKeys = ImmutableList.copyOf(partitionKeys);
         this.addresses = ImmutableList.copyOf(addresses);
+        this.forceLocalScheduling = forceLocalScheduling;
+        this.session = session;
+        this.tupleDomain = tupleDomain;
     }
 
     @JsonProperty
@@ -148,10 +156,22 @@ public class HiveSplit
         return session;
     }
 
+    @JsonProperty
+    public TupleDomain<HiveColumnHandle> getTupleDomain()
+    {
+        return tupleDomain;
+    }
+
+    @JsonProperty
+    public boolean isForceLocalScheduling()
+    {
+        return forceLocalScheduling;
+    }
+
     @Override
     public boolean isRemotelyAccessible()
     {
-        return true;
+        return !forceLocalScheduling;
     }
 
     @Override
@@ -164,7 +184,9 @@ public class HiveSplit
                 .put("hosts", addresses)
                 .put("database", database)
                 .put("table", table)
+                .put("forceLocalScheduling", forceLocalScheduling)
                 .put("partitionName", partitionName)
+                .put("tupleDomain", tupleDomain)
                 .build();
     }
 
@@ -175,6 +197,7 @@ public class HiveSplit
                 .addValue(path)
                 .addValue(start)
                 .addValue(length)
+                .addValue(tupleDomain)
                 .toString();
     }
 }

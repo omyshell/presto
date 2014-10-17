@@ -14,6 +14,8 @@
 package com.facebook.presto.verifier;
 
 import com.google.common.base.Splitter;
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
@@ -21,10 +23,10 @@ import io.airlift.units.Duration;
 import org.joda.time.DateTime;
 
 import javax.annotation.Nullable;
-import javax.validation.constraints.Max;
 import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
 
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -36,7 +38,7 @@ public class VerifierConfig
     private String controlUsername = "verifier-test";
     private String testPassword;
     private String controlPassword;
-    private String suite;
+    private List<String> suites;
     private String source;
     private String runId = new DateTime().toString("yyyy-MM-dd");
     private Set<String> eventClients = ImmutableSet.of("human-readable");
@@ -56,6 +58,7 @@ public class VerifierConfig
     private int queryRepetitions = 1;
     private String skipCorrectnessRegex = "^$";
     private boolean checkCorrectness = true;
+    private boolean explainOnly = false;
     private boolean verboseResultsComparison;
     private String testCatalogOverride;
     private String testSchemaOverride;
@@ -119,22 +122,46 @@ public class VerifierConfig
         return this;
     }
 
-    @NotNull
     public String getSuite()
     {
-        return suite;
+        return suites == null ? null : suites.get(0);
     }
 
-    @ConfigDescription("The suite of queries in the query database to run")
+    @ConfigDescription("The suites of queries in the query database to run")
     @Config("suite")
     public VerifierConfig setSuite(String suite)
     {
-        this.suite = suite;
+        if (suite == null) {
+            return this;
+        }
+        suites = ImmutableList.of(suite);
+        return this;
+    }
+
+    @NotNull
+    public List<String> getSuites()
+    {
+        return suites;
+    }
+
+    @ConfigDescription("The suites of queries in the query database to run")
+    @Config("suites")
+    public VerifierConfig setSuites(String suites)
+    {
+        if (Strings.isNullOrEmpty(suites)) {
+            return this;
+        }
+
+        ImmutableList.Builder<String> builder = ImmutableList.builder();
+        for (String value : Splitter.on(',').trimResults().omitEmptyStrings().split(suites)) {
+            builder.add(value);
+        }
+
+        this.suites = builder.build();
         return this;
     }
 
     @Min(1)
-    @Max(50)
     public int getThreadCount()
     {
         return threadCount;
@@ -232,7 +259,7 @@ public class VerifierConfig
         return maxQueries;
     }
 
-    @ConfigDescription("The maximum number of queries from the suite to run")
+    @ConfigDescription("The maximum number of queries to run for each suite")
     @Config("max-queries")
     public VerifierConfig setMaxQueries(int maxQueries)
     {
@@ -253,12 +280,25 @@ public class VerifierConfig
         return this;
     }
 
+    public boolean isExplainOnly()
+    {
+        return explainOnly;
+    }
+
+    @ConfigDescription("Only attempt to explain queries but do not execute them")
+    @Config("explain-only")
+    public VerifierConfig setExplainOnly(boolean explainOnly)
+    {
+        this.explainOnly = explainOnly;
+        return this;
+    }
+
     public int getSuiteRepetitions()
     {
         return suiteRepetitions;
     }
 
-    @ConfigDescription("Number of times to run the suite")
+    @ConfigDescription("Number of times to run each suite")
     @Config("suite-repetitions")
     public VerifierConfig setSuiteRepetitions(int suiteRepetitions)
     {
@@ -330,7 +370,7 @@ public class VerifierConfig
         return testCatalogOverride;
     }
 
-    @ConfigDescription("Overrides the test_catalog field in all queries in the suite")
+    @ConfigDescription("Overrides the test_catalog field in all queries in the suites")
     @Config("test.catalog-override")
     public VerifierConfig setTestCatalogOverride(String testCatalogOverride)
     {
@@ -343,7 +383,7 @@ public class VerifierConfig
         return testSchemaOverride;
     }
 
-    @ConfigDescription("Overrides the test_schema field in all queries in the suite")
+    @ConfigDescription("Overrides the test_schema field in all queries in the suites")
     @Config("test.schema-override")
     public VerifierConfig setTestSchemaOverride(String testSchemaOverride)
     {
@@ -411,7 +451,7 @@ public class VerifierConfig
         return controlCatalogOverride;
     }
 
-    @ConfigDescription("Overrides the control_catalog field in all queries in the suite")
+    @ConfigDescription("Overrides the control_catalog field in all queries in the suites")
     @Config("control.catalog-override")
     public VerifierConfig setControlCatalogOverride(String controlCatalogOverride)
     {
@@ -424,7 +464,7 @@ public class VerifierConfig
         return controlSchemaOverride;
     }
 
-    @ConfigDescription("Overrides the control_schema field in all queries in the suite")
+    @ConfigDescription("Overrides the control_schema field in all queries in the suites")
     @Config("control.schema-override")
     public VerifierConfig setControlSchemaOverride(String controlSchemaOverride)
     {

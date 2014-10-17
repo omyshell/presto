@@ -14,9 +14,6 @@
 package com.facebook.presto.server;
 
 import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.block.dictionary.DictionaryBlockEncoding;
-import com.facebook.presto.block.rle.RunLengthBlockEncoding;
-import com.facebook.presto.block.snappy.SnappyBlockEncoding;
 import com.facebook.presto.client.QueryResults;
 import com.facebook.presto.connector.ConnectorManager;
 import com.facebook.presto.connector.informationSchema.InformationSchemaModule;
@@ -36,7 +33,6 @@ import com.facebook.presto.execution.TaskManager;
 import com.facebook.presto.execution.TaskManagerConfig;
 import com.facebook.presto.failureDetector.FailureDetector;
 import com.facebook.presto.failureDetector.FailureDetectorModule;
-import com.facebook.presto.guice.AbstractConfigurationAwareModule;
 import com.facebook.presto.index.IndexManager;
 import com.facebook.presto.metadata.CatalogManager;
 import com.facebook.presto.metadata.CatalogManagerConfig;
@@ -53,17 +49,19 @@ import com.facebook.presto.operator.RecordSinkManager;
 import com.facebook.presto.operator.RecordSinkProvider;
 import com.facebook.presto.operator.index.IndexJoinLookupStats;
 import com.facebook.presto.spi.ConnectorFactory;
+import com.facebook.presto.spi.ConnectorPageSourceProvider;
 import com.facebook.presto.spi.ConnectorRecordSinkProvider;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.block.BlockEncodingFactory;
 import com.facebook.presto.spi.block.BlockEncodingSerde;
 import com.facebook.presto.spi.block.FixedWidthBlockEncoding;
+import com.facebook.presto.spi.block.LazySliceArrayBlockEncoding;
+import com.facebook.presto.spi.block.SliceArrayBlockEncoding;
 import com.facebook.presto.spi.block.VariableWidthBlockEncoding;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.split.ConnectorDataStreamProvider;
-import com.facebook.presto.split.DataStreamManager;
-import com.facebook.presto.split.DataStreamProvider;
+import com.facebook.presto.split.PageSourceManager;
+import com.facebook.presto.split.PageSourceProvider;
 import com.facebook.presto.sql.Serialization.ExpressionDeserializer;
 import com.facebook.presto.sql.Serialization.ExpressionSerializer;
 import com.facebook.presto.sql.Serialization.FunctionCallDeserializer;
@@ -86,6 +84,7 @@ import com.google.inject.Scopes;
 import com.google.inject.TypeLiteral;
 import com.google.inject.multibindings.MapBinder;
 import com.google.inject.multibindings.Multibinder;
+import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.airlift.discovery.client.ServiceDescriptor;
 import io.airlift.slice.Slice;
 
@@ -138,6 +137,8 @@ public class ServerMainModule
 
         bindFailureDetector(binder, serverConfig.isCoordinator());
 
+        jaxrsBinder(binder).bind(ThrowableMapper.class);
+
         // task execution
         jaxrsBinder(binder).bind(TaskResource.class);
         binder.bind(TaskManager.class).to(SqlTaskManager.class).in(Scopes.SINGLETON);
@@ -163,12 +164,13 @@ public class ServerMainModule
         // execution
         binder.bind(LocationFactory.class).to(HttpLocationFactory.class).in(Scopes.SINGLETON);
         binder.bind(RemoteTaskFactory.class).to(HttpRemoteTaskFactory.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(RemoteTaskFactory.class).withGeneratedName();
         httpClientBinder(binder).bindHttpClient("scheduler", ForScheduler.class).withTracing();
 
         // data stream provider
-        binder.bind(DataStreamManager.class).in(Scopes.SINGLETON);
-        binder.bind(DataStreamProvider.class).to(DataStreamManager.class).in(Scopes.SINGLETON);
-        newSetBinder(binder, ConnectorDataStreamProvider.class);
+        binder.bind(PageSourceManager.class).in(Scopes.SINGLETON);
+        binder.bind(PageSourceProvider.class).to(PageSourceManager.class).in(Scopes.SINGLETON);
+        newSetBinder(binder, ConnectorPageSourceProvider.class);
 
         // record sink provider
         binder.bind(RecordSinkManager.class).in(Scopes.SINGLETON);
@@ -259,9 +261,8 @@ public class ServerMainModule
         Multibinder<BlockEncodingFactory<?>> blockEncodingFactoryBinder = newSetBinder(binder, new TypeLiteral<BlockEncodingFactory<?>>() {});
         blockEncodingFactoryBinder.addBinding().toInstance(VariableWidthBlockEncoding.FACTORY);
         blockEncodingFactoryBinder.addBinding().toInstance(FixedWidthBlockEncoding.FACTORY);
-        blockEncodingFactoryBinder.addBinding().toInstance(RunLengthBlockEncoding.FACTORY);
-        blockEncodingFactoryBinder.addBinding().toInstance(DictionaryBlockEncoding.FACTORY);
-        blockEncodingFactoryBinder.addBinding().toInstance(SnappyBlockEncoding.FACTORY);
+        blockEncodingFactoryBinder.addBinding().toInstance(SliceArrayBlockEncoding.FACTORY);
+        blockEncodingFactoryBinder.addBinding().toInstance(LazySliceArrayBlockEncoding.FACTORY);
 
         // thread visualizer
         jaxrsBinder(binder).bind(ThreadResource.class);

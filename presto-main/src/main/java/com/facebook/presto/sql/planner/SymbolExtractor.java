@@ -26,7 +26,7 @@ import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.PlanNode;
 import com.facebook.presto.sql.planner.plan.PlanVisitor;
 import com.facebook.presto.sql.planner.plan.ProjectNode;
-import com.facebook.presto.sql.planner.plan.RowNumberLimitNode;
+import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SampleNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.planner.plan.SinkNode;
@@ -37,9 +37,11 @@ import com.facebook.presto.sql.planner.plan.TableWriterNode;
 import com.facebook.presto.sql.planner.plan.TopNNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
 import com.facebook.presto.sql.planner.plan.UnionNode;
+import com.facebook.presto.sql.planner.plan.UnnestNode;
 import com.facebook.presto.sql.planner.plan.ValuesNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 
 import java.util.Set;
 
@@ -121,7 +123,7 @@ public final class SymbolExtractor
         }
 
         @Override
-        public Void visitRowNumberLimit(RowNumberLimitNode node, Void context)
+        public Void visitRowNumber(RowNumberNode node, Void context)
         {
             // visit child
             node.getSource().accept(this, context);
@@ -147,6 +149,16 @@ public final class SymbolExtractor
             node.getSource().accept(this, context);
 
             builder.addAll(node.getOutputSymbols());
+
+            return null;
+        }
+
+        @Override
+        public Void visitUnnest(UnnestNode node, Void context)
+        {
+            node.getSource().accept(this, context);
+
+            builder.addAll(Iterables.concat(node.getUnnestSymbols().values()));
 
             return null;
         }
@@ -235,6 +247,7 @@ public final class SymbolExtractor
             return null;
         }
 
+        @Override
         public Void visitIndexSource(IndexSourceNode node, Void context)
         {
             builder.addAll(node.getAssignments().keySet());

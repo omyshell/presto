@@ -13,15 +13,18 @@
  */
 package com.facebook.presto.sql.planner;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.FunctionInfo;
 import com.facebook.presto.metadata.FunctionRegistry;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.OperatorType;
 import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.tree.ArithmeticExpression;
+import com.facebook.presto.sql.tree.ArrayConstructor;
 import com.facebook.presto.sql.tree.AstVisitor;
 import com.facebook.presto.sql.tree.BetweenPredicate;
 import com.facebook.presto.sql.tree.BooleanLiteral;
@@ -43,10 +46,12 @@ import com.facebook.presto.sql.tree.Node;
 import com.facebook.presto.sql.tree.NotExpression;
 import com.facebook.presto.sql.tree.NullIfExpression;
 import com.facebook.presto.sql.tree.NullLiteral;
+import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.QualifiedNameReference;
 import com.facebook.presto.sql.tree.SearchedCaseExpression;
 import com.facebook.presto.sql.tree.SimpleCaseExpression;
 import com.facebook.presto.sql.tree.StringLiteral;
+import com.facebook.presto.sql.tree.SubscriptExpression;
 import com.facebook.presto.sql.tree.WhenClause;
 import com.facebook.presto.type.LikeFunctions;
 import com.google.common.base.Charsets;
@@ -68,9 +73,11 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
 
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.sql.planner.LiteralInterpreter.toExpression;
 import static com.facebook.presto.sql.planner.LiteralInterpreter.toExpressions;
-import static com.facebook.presto.type.TypeUtils.nameGetter;
+import static com.facebook.presto.type.TypeUtils.typeSignatureGetter;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Predicates.instanceOf;
@@ -90,7 +97,7 @@ public class ExpressionInterpreter
     private final IdentityHashMap<LikePredicate, Regex> likePatternCache = new IdentityHashMap<>();
     private final IdentityHashMap<InListExpression, Set<Object>> inListCache = new IdentityHashMap<>();
 
-    public static ExpressionInterpreter expressionInterpreter(Expression expression, Metadata metadata, ConnectorSession session, IdentityHashMap<Expression, Type> expressionTypes)
+    public static ExpressionInterpreter expressionInterpreter(Expression expression, Metadata metadata, Session session, IdentityHashMap<Expression, Type> expressionTypes)
     {
         checkNotNull(expression, "expression is null");
         checkNotNull(metadata, "metadata is null");
@@ -99,7 +106,7 @@ public class ExpressionInterpreter
         return new ExpressionInterpreter(expression, metadata, session, expressionTypes, false);
     }
 
-    public static ExpressionInterpreter expressionOptimizer(Expression expression, Metadata metadata, ConnectorSession session, IdentityHashMap<Expression, Type> expressionTypes)
+    public static ExpressionInterpreter expressionOptimizer(Expression expression, Metadata metadata, Session session, IdentityHashMap<Expression, Type> expressionTypes)
     {
         checkNotNull(expression, "expression is null");
         checkNotNull(metadata, "metadata is null");
@@ -108,11 +115,11 @@ public class ExpressionInterpreter
         return new ExpressionInterpreter(expression, metadata, session, expressionTypes, true);
     }
 
-    private ExpressionInterpreter(Expression expression, Metadata metadata, ConnectorSession session, IdentityHashMap<Expression, Type> expressionTypes, boolean optimize)
+    private ExpressionInterpreter(Expression expression, Metadata metadata, Session session, IdentityHashMap<Expression, Type> expressionTypes, boolean optimize)
     {
         this.expression = expression;
         this.metadata = metadata;
-        this.session = session;
+        this.session = session.toConnectorSession();
         this.expressionTypes = expressionTypes;
         this.optimize = optimize;
 
@@ -529,8 +536,8 @@ public class ExpressionInterpreter
 
             Type commonType = FunctionRegistry.getCommonSuperType(firstType, secondType).get();
 
-            FunctionInfo firstCast = metadata.getExactOperator(OperatorType.CAST, commonType, ImmutableList.of(firstType));
-            FunctionInfo secondCast = metadata.getExactOperator(OperatorType.CAST, commonType, ImmutableList.of(secondType));
+            FunctionInfo firstCast = metadata.getFunctionRegistry().getCoercion(firstType, commonType);
+            FunctionInfo secondCast = metadata.getFunctionRegistry().getCoercion(secondType, commonType);
 
             // cast(first as <common type>) == cast(second as <common type>)
             boolean equal = (Boolean) invokeOperator(
@@ -618,7 +625,7 @@ public class ExpressionInterpreter
                 argumentValues.add(value);
                 argumentTypes.add(type);
             }
-            FunctionInfo function = metadata.resolveFunction(node.getName(), Lists.transform(argumentTypes, nameGetter()), false);
+            FunctionInfo function = metadata.resolveFunction(node.getName(), Lists.transform(argumentTypes, typeSignatureGetter()), false);
             for (int i = 0; i < argumentValues.size(); i++) {
                 Object value = argumentValues.get(i);
                 if (value == null && !function.getNullableArguments().get(i)) {
@@ -739,12 +746,12 @@ public class ExpressionInterpreter
                 return null;
             }
 
-            Type type = metadata.getType(node.getType());
+            Type type = metadata.getType(parseTypeSignature(node.getType()));
             if (type == null) {
                 throw new IllegalArgumentException("Unsupported type: " + node.getType());
             }
 
-            FunctionInfo operatorInfo = metadata.getExactOperator(OperatorType.CAST, type, types(node.getExpression()));
+            FunctionInfo operatorInfo = metadata.getFunctionRegistry().getCoercion(expressionTypes.get(node.getExpression()), type);
 
             try {
                 return invoke(session, operatorInfo.getMethodHandle(), ImmutableList.of(value));
@@ -758,9 +765,34 @@ public class ExpressionInterpreter
         }
 
         @Override
+        protected Object visitArrayConstructor(ArrayConstructor node, Object context)
+        {
+            return visitFunctionCall(new FunctionCall(QualifiedName.of(ArrayConstructor.ARRAY_CONSTRUCTOR), node.getValues()), context);
+        }
+
+        @Override
+        protected Object visitSubscriptExpression(SubscriptExpression node, Object context)
+        {
+            Object base = process(node.getBase(), context);
+            if (base == null) {
+                return null;
+            }
+            Object index = process(node.getIndex(), context);
+            if (index == null) {
+                return null;
+            }
+
+            if (hasUnresolvedValue(base, index)) {
+                return new SubscriptExpression(toExpression(base, expressionTypes.get(node.getBase())), toExpression(index, expressionTypes.get(node.getIndex())));
+            }
+
+            return invokeOperator(OperatorType.SUBSCRIPT, types(node.getBase(), node.getIndex()), ImmutableList.of(base, index));
+        }
+
+        @Override
         protected Object visitExpression(Expression node, Object context)
         {
-            throw new UnsupportedOperationException("not yet implemented: " + node.getClass().getName());
+            throw new PrestoException(NOT_SUPPORTED, "not yet implemented: " + node.getClass().getName());
         }
 
         @Override

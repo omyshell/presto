@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.example;
 
+import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonDeserializer;
@@ -30,6 +31,7 @@ import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static io.airlift.json.JsonCodec.listJsonCodec;
+import static java.util.Locale.ENGLISH;
 
 public final class MetadataUtil
 {
@@ -54,10 +56,10 @@ public final class MetadataUtil
             extends FromStringDeserializer<Type>
     {
         private final Map<String, Type> types = ImmutableMap.<String, Type>of(
-                BOOLEAN.getName(), BOOLEAN,
-                BIGINT.getName(), BIGINT,
-                DOUBLE.getName(), DOUBLE,
-                VARCHAR.getName(), VARCHAR);
+                StandardTypes.BOOLEAN, BOOLEAN,
+                StandardTypes.BIGINT, BIGINT,
+                StandardTypes.DOUBLE, DOUBLE,
+                StandardTypes.VARCHAR, VARCHAR);
 
         public TestingTypeDeserializer()
         {
@@ -67,7 +69,7 @@ public final class MetadataUtil
         @Override
         protected Type _deserialize(String value, DeserializationContext context)
         {
-            Type type = types.get(value.toLowerCase());
+            Type type = types.get(value.toLowerCase(ENGLISH));
             if (type == null) {
                 throw new IllegalArgumentException(String.valueOf("Unknown type " + value));
             }

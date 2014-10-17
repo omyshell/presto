@@ -14,6 +14,8 @@
 package com.facebook.presto.operator;
 
 import com.facebook.presto.ExceededMemoryLimitException;
+import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.SortOrder;
 import com.facebook.presto.spi.type.Type;
@@ -54,6 +56,7 @@ public class TopNRowNumberOperator
 
         private final List<Type> types;
         private final List<Type> sortTypes;
+        private final boolean generateRowNumber;
         private boolean closed;
 
         public TopNRowNumberOperatorFactory(
@@ -65,6 +68,7 @@ public class TopNRowNumberOperator
                 List<Integer> sortChannels,
                 List<SortOrder> sortOrder,
                 int maxRowCountPerPartition,
+                boolean partial,
                 int expectedPositions)
         {
             this.operatorId = operatorId;
@@ -77,9 +81,10 @@ public class TopNRowNumberOperator
             checkArgument(maxRowCountPerPartition > 0, "maxRowCountPerPartition must be > 0");
             this.maxRowCountPerPartition = maxRowCountPerPartition;
             checkArgument(expectedPositions > 0, "expectedPositions must be > 0");
+            this.generateRowNumber = !partial || !partitionChannels.isEmpty();
             this.expectedPositions = expectedPositions;
 
-            this.types = toTypes(sourceTypes, outputChannels);
+            this.types = toTypes(sourceTypes, outputChannels, generateRowNumber);
             ImmutableList.Builder<Type> sortTypes = ImmutableList.builder();
             for (int channel : sortChannels) {
                 sortTypes.add(types.get(channel));
@@ -108,6 +113,7 @@ public class TopNRowNumberOperator
                     sortOrder,
                     sortTypes,
                     maxRowCountPerPartition,
+                    generateRowNumber,
                     expectedPositions);
         }
 
@@ -128,13 +134,14 @@ public class TopNRowNumberOperator
     private final List<Integer> sortChannels;
     private final List<SortOrder> sortOrders;
     private final List<Type> sortTypes;
+    private final boolean generateRowNumber;
     private final int maxRowCountPerPartition;
 
     private final MemoryManager memoryManager;
     private final Map<Long, PartitionBuilder> partitionRows;
     private Optional<FlushingPartition> flushingPartition;
     private final PageBuilder pageBuilder;
-    private final GroupByHash groupByHash;
+    private final Optional<GroupByHash> groupByHash;
 
     public TopNRowNumberOperator(
             OperatorContext operatorContext,
@@ -146,6 +153,7 @@ public class TopNRowNumberOperator
             List<SortOrder> sortOrders,
             List<Type> sortTypes,
             int maxRowCountPerPartition,
+            boolean generateRowNumber,
             int expectedPositions)
     {
         this.operatorContext = checkNotNull(operatorContext, "operatorContext is null");
@@ -157,12 +165,18 @@ public class TopNRowNumberOperator
 
         checkArgument(maxRowCountPerPartition > 0, "maxRowCountPerPartition must be > 0");
         this.maxRowCountPerPartition = maxRowCountPerPartition;
+        this.generateRowNumber = generateRowNumber;
         checkArgument(expectedPositions > 0, "expectedPositions must be > 0");
 
-        this.types = toTypes(sourceTypes, outputChannels);
+        this.types = toTypes(sourceTypes, outputChannels, generateRowNumber);
         this.memoryManager = new MemoryManager(operatorContext);
         this.partitionRows = new HashMap<>();
-        this.groupByHash = new GroupByHash(partitionTypes, Ints.toArray(partitionChannels), expectedPositions);
+        if (partitionChannels.isEmpty()) {
+            this.groupByHash = Optional.absent();
+        }
+        else {
+            this.groupByHash = Optional.of(new GroupByHash(partitionTypes, Ints.toArray(partitionChannels), expectedPositions));
+        }
         this.flushingPartition = Optional.absent();
         this.pageBuilder = new PageBuilder(types);
     }
@@ -223,24 +237,30 @@ public class TopNRowNumberOperator
 
     private void processPage(Page page)
     {
-        long groupByHashSize = groupByHash.getEstimatedSize();
-        GroupByIdBlock partitionIds = groupByHash.getGroupIds(page);
-        memoryManager.canUseDelta(groupByHash.getEstimatedSize() - groupByHashSize);
+        Optional<GroupByIdBlock> partitionIds = Optional.absent();
+        if (groupByHash.isPresent()) {
+            GroupByHash hash = groupByHash.get();
+            long groupByHashSize = hash.getEstimatedSize();
+            partitionIds = Optional.of(hash.getGroupIds(page));
+            if (!memoryManager.canUseDelta(hash.getEstimatedSize() - groupByHashSize)) {
+                throw new ExceededMemoryLimitException(memoryManager.getMaxMemorySize());
+            }
+        }
 
         long sizeDelta = 0;
         Block[] blocks = page.getBlocks();
         for (int position = 0; position < page.getPositionCount(); position++) {
-            long partitionId = partitionIds.getGroupId(position);
+            long partitionId = groupByHash.isPresent() ? partitionIds.get().getGroupId(position) : 0;
             if (!partitionRows.containsKey(partitionId)) {
                 partitionRows.put(partitionId, new PartitionBuilder(sortTypes, sortChannels, sortOrders, maxRowCountPerPartition));
             }
             PartitionBuilder partitionBuilder = partitionRows.get(partitionId);
             if (partitionBuilder.getRowCount() < maxRowCountPerPartition) {
-                Block[] row = page.getSingleValueBlocks(position);
+                Block[] row = getSingleValueBlocks(page, position);
                 sizeDelta += partitionBuilder.addRow(row);
             }
             else if (compare(position, blocks, partitionBuilder.peekLastRow()) < 0) {
-                Block[] row = page.getSingleValueBlocks(position);
+                Block[] row = getSingleValueBlocks(page, position);
                 sizeDelta += partitionBuilder.replaceRow(row);
             }
         }
@@ -286,8 +306,9 @@ public class TopNRowNumberOperator
                     Type type = types.get(channel);
                     type.appendTo(next[channel], 0, pageBuilder.getBlockBuilder(i));
                 }
-
-                BIGINT.writeLong(pageBuilder.getBlockBuilder(outputChannels.length), currentFlushingPartition.getRowNumber());
+                if (generateRowNumber) {
+                    BIGINT.writeLong(pageBuilder.getBlockBuilder(outputChannels.length), currentFlushingPartition.getRowNumber());
+                }
             }
             if (!currentFlushingPartition.hasNext()) {
                 flushingPartition = getFlushingPartition();
@@ -335,13 +356,25 @@ public class TopNRowNumberOperator
         return partitionRows.isEmpty();
     }
 
-    private static List<Type> toTypes(List<? extends Type> sourceTypes, List<Integer> outputChannels)
+    private static Block[] getSingleValueBlocks(Page page, int position)
+    {
+        Block[] blocks = page.getBlocks();
+        Block[] row = new Block[blocks.length];
+        for (int i = 0; i < blocks.length; i++) {
+            row[i] = blocks[i].getSingleValueBlock(position);
+        }
+        return row;
+    }
+
+    private static List<Type> toTypes(List<? extends Type> sourceTypes, List<Integer> outputChannels, boolean generateRowNumber)
     {
         ImmutableList.Builder<Type> types = ImmutableList.builder();
         for (int channel : outputChannels) {
             types.add(sourceTypes.get(channel));
         }
-        types.add(BIGINT);
+        if (generateRowNumber) {
+            types.add(BIGINT);
+        }
         return types.build();
     }
 

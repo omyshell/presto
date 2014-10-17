@@ -13,22 +13,23 @@
  */
 package com.facebook.presto.sql.analyzer;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.FunctionInfo;
 import com.facebook.presto.metadata.FunctionRegistry;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.OperatorNotFoundException;
 import com.facebook.presto.metadata.OperatorType;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.type.TypeSignature;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.DependencyExtractor;
 import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.tree.ArithmeticExpression;
+import com.facebook.presto.sql.tree.ArrayConstructor;
 import com.facebook.presto.sql.tree.AstVisitor;
 import com.facebook.presto.sql.tree.BetweenPredicate;
 import com.facebook.presto.sql.tree.BooleanLiteral;
 import com.facebook.presto.sql.tree.Cast;
-import com.facebook.presto.sql.tree.InputReference;
 import com.facebook.presto.sql.tree.CoalesceExpression;
 import com.facebook.presto.sql.tree.ComparisonExpression;
 import com.facebook.presto.sql.tree.CurrentTime;
@@ -40,6 +41,7 @@ import com.facebook.presto.sql.tree.GenericLiteral;
 import com.facebook.presto.sql.tree.IfExpression;
 import com.facebook.presto.sql.tree.InListExpression;
 import com.facebook.presto.sql.tree.InPredicate;
+import com.facebook.presto.sql.tree.InputReference;
 import com.facebook.presto.sql.tree.IntervalLiteral;
 import com.facebook.presto.sql.tree.IsNotNullPredicate;
 import com.facebook.presto.sql.tree.IsNullPredicate;
@@ -58,6 +60,7 @@ import com.facebook.presto.sql.tree.SimpleCaseExpression;
 import com.facebook.presto.sql.tree.SortItem;
 import com.facebook.presto.sql.tree.StringLiteral;
 import com.facebook.presto.sql.tree.SubqueryExpression;
+import com.facebook.presto.sql.tree.SubscriptExpression;
 import com.facebook.presto.sql.tree.TimeLiteral;
 import com.facebook.presto.sql.tree.TimestampLiteral;
 import com.facebook.presto.sql.tree.WhenClause;
@@ -80,6 +83,7 @@ import java.util.Set;
 
 import static com.facebook.presto.metadata.FunctionRegistry.canCoerce;
 import static com.facebook.presto.metadata.FunctionRegistry.getCommonSuperType;
+import static com.facebook.presto.metadata.OperatorType.SUBSCRIPT;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.spi.type.DateType.DATE;
@@ -90,6 +94,7 @@ import static com.facebook.presto.spi.type.TimeType.TIME;
 import static com.facebook.presto.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
 import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.AMBIGUOUS_ATTRIBUTE;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.MISSING_ATTRIBUTE;
@@ -98,6 +103,7 @@ import static com.facebook.presto.sql.analyzer.SemanticErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.TYPE_MISMATCH;
 import static com.facebook.presto.sql.tree.Extract.Field.TIMEZONE_HOUR;
 import static com.facebook.presto.sql.tree.Extract.Field.TIMEZONE_MINUTE;
+import static com.facebook.presto.type.ArrayParametricType.ARRAY;
 import static com.facebook.presto.type.UnknownType.UNKNOWN;
 import static com.facebook.presto.util.DateTimeUtils.timeHasTimeZone;
 import static com.facebook.presto.util.DateTimeUtils.timestampHasTimeZone;
@@ -110,14 +116,14 @@ public class ExpressionAnalyzer
     private final Metadata metadata;
     private final SqlParser sqlParser;
     private final boolean experimentalSyntaxEnabled;
-    private final ConnectorSession session;
+    private final Session session;
     private final Map<QualifiedName, Integer> resolvedNames = new HashMap<>();
     private final IdentityHashMap<FunctionCall, FunctionInfo> resolvedFunctions = new IdentityHashMap<>();
     private final IdentityHashMap<Expression, Type> expressionTypes = new IdentityHashMap<>();
     private final IdentityHashMap<Expression, Type> expressionCoercions = new IdentityHashMap<>();
     private final Set<InPredicate> subqueryInPredicates = Collections.newSetFromMap(new IdentityHashMap<InPredicate, Boolean>());
 
-    public ExpressionAnalyzer(Analysis analysis, ConnectorSession session, Metadata metadata, SqlParser sqlParser, boolean experimentalSyntaxEnabled)
+    public ExpressionAnalyzer(Analysis analysis, Session session, Metadata metadata, SqlParser sqlParser, boolean experimentalSyntaxEnabled)
     {
         this.analysis = checkNotNull(analysis, "analysis is null");
         this.session = checkNotNull(session, "session is null");
@@ -404,6 +410,21 @@ public class ExpressionAnalyzer
         }
 
         @Override
+        protected Type visitSubscriptExpression(SubscriptExpression node, AnalysisContext context)
+        {
+            return getOperator(context, node, SUBSCRIPT, node.getBase(), node.getIndex());
+        }
+
+        @Override
+        protected Type visitArrayConstructor(ArrayConstructor node, AnalysisContext context)
+        {
+            Type type = coerceToSingleType(context, "All ARRAY elements must be the same type: %s", node.getValues());
+            Type arrayType = metadata.getTypeManager().getParameterizedType(ARRAY.getName(), ImmutableList.of(type.getTypeSignature()));
+            expressionTypes.put(node, arrayType);
+            return arrayType;
+        }
+
+        @Override
         protected Type visitStringLiteral(StringLiteral node, AnalysisContext context)
         {
             expressionTypes.put(node, VARCHAR);
@@ -434,13 +455,13 @@ public class ExpressionAnalyzer
         @Override
         protected Type visitGenericLiteral(GenericLiteral node, AnalysisContext context)
         {
-            Type type = metadata.getType(node.getType());
+            Type type = metadata.getType(parseTypeSignature(node.getType()));
             if (type == null) {
                 throw new SemanticException(TYPE_MISMATCH, node, "Unknown type: " + node.getType());
             }
 
             try {
-                metadata.getExactOperator(OperatorType.CAST, type, ImmutableList.of(VARCHAR));
+                metadata.getFunctionRegistry().getCoercion(VARCHAR, type);
             }
             catch (IllegalArgumentException e) {
                 throw new SemanticException(TYPE_MISMATCH, node, "No literal form for type %s", type);
@@ -512,9 +533,9 @@ public class ExpressionAnalyzer
                 }
             }
 
-            ImmutableList.Builder<String> argumentTypes = ImmutableList.builder();
+            ImmutableList.Builder<TypeSignature> argumentTypes = ImmutableList.builder();
             for (Expression expression : node.getArguments()) {
-                argumentTypes.add(process(expression, context).getName());
+                argumentTypes.add(process(expression, context).getTypeSignature());
             }
 
             FunctionInfo function = metadata.resolveFunction(node.getName(), argumentTypes.build(), context.isApproximate());
@@ -568,7 +589,7 @@ public class ExpressionAnalyzer
         @Override
         public Type visitCast(Cast node, AnalysisContext context)
         {
-            Type type = metadata.getType(node.getType());
+            Type type = metadata.getType(parseTypeSignature(node.getType()));
             if (type == null) {
                 throw new SemanticException(TYPE_MISMATCH, node, "Unknown type: " + node.getType());
             }
@@ -576,7 +597,7 @@ public class ExpressionAnalyzer
             Type value = process(node.getExpression(), context);
             if (value != UNKNOWN) {
                 try {
-                    metadata.getExactOperator(OperatorType.CAST, type, ImmutableList.of(value));
+                    metadata.getFunctionRegistry().getCoercion(value, type);
                 }
                 catch (OperatorNotFoundException e) {
                     throw new SemanticException(TYPE_MISMATCH, node, "Cannot cast %s to %s", value, type);
@@ -753,7 +774,7 @@ public class ExpressionAnalyzer
     }
 
     public static IdentityHashMap<Expression, Type> getExpressionTypes(
-            ConnectorSession session,
+            Session session,
             Metadata metadata,
             SqlParser sqlParser,
             Map<Symbol, Type> types,
@@ -763,7 +784,7 @@ public class ExpressionAnalyzer
     }
 
     public static IdentityHashMap<Expression, Type> getExpressionTypes(
-            ConnectorSession session,
+            Session session,
             Metadata metadata,
             SqlParser sqlParser,
             Map<Symbol, Type> types,
@@ -773,7 +794,7 @@ public class ExpressionAnalyzer
     }
 
     public static IdentityHashMap<Expression, Type> getExpressionTypesFromInput(
-            ConnectorSession session,
+            Session session,
             Metadata metadata,
             SqlParser sqlParser,
             Map<Integer, Type> types,
@@ -783,7 +804,7 @@ public class ExpressionAnalyzer
     }
 
     public static IdentityHashMap<Expression, Type> getExpressionTypesFromInput(
-            ConnectorSession session,
+            Session session,
             Metadata metadata,
             SqlParser sqlParser,
             Map<Integer, Type> types,
@@ -793,7 +814,7 @@ public class ExpressionAnalyzer
     }
 
     public static ExpressionAnalysis analyzeExpressionsWithSymbols(
-            ConnectorSession session,
+            Session session,
             Metadata metadata,
             SqlParser sqlParser,
             final Map<Symbol, Type> types,
@@ -816,7 +837,7 @@ public class ExpressionAnalyzer
     }
 
     public static ExpressionAnalysis analyzeExpressionsWithInputs(
-            ConnectorSession session,
+            Session session,
             Metadata metadata,
             SqlParser sqlParser,
             Map<Integer, Type> types,
@@ -832,7 +853,7 @@ public class ExpressionAnalyzer
     }
 
     private static ExpressionAnalysis analyzeExpressions(
-            ConnectorSession session,
+            Session session,
             Metadata metadata,
             SqlParser sqlParser,
             TupleDescriptor tupleDescriptor,
@@ -850,7 +871,7 @@ public class ExpressionAnalyzer
     }
 
     public static ExpressionAnalysis analyzeExpression(
-            ConnectorSession session,
+            Session session,
             Metadata metadata,
             SqlParser sqlParser,
             TupleDescriptor tupleDescriptor,

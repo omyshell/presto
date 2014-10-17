@@ -16,6 +16,8 @@ package com.facebook.presto.operator;
 import com.facebook.presto.ExceededMemoryLimitException;
 import com.facebook.presto.operator.aggregation.AccumulatorFactory;
 import com.facebook.presto.operator.aggregation.GroupedAccumulator;
+import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.planner.plan.AggregationNode.Step;
@@ -193,6 +195,9 @@ public class HashAggregationOperator
     public Page getOutput()
     {
         if (outputIterator == null || !outputIterator.hasNext()) {
+            // current output iterator is done
+            outputIterator = null;
+
             // no data
             if (aggregationBuilder == null) {
                 return null;
@@ -212,6 +217,8 @@ public class HashAggregationOperator
             aggregationBuilder = null;
 
             if (!outputIterator.hasNext()) {
+                // current output iterator is done
+                outputIterator = null;
                 return null;
             }
         }

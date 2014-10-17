@@ -14,6 +14,7 @@
 package com.facebook.presto.spi;
 
 public enum StandardErrorCode
+        implements ErrorCodeSupplier
 {
     USER_ERROR(0x0000_0000),
     SYNTAX_ERROR(0x0000_0001),
@@ -29,6 +30,7 @@ public enum StandardErrorCode
     INVALID_VIEW(0x0000_000B),
     ALREADY_EXISTS(0x0000_000C),
     NOT_SUPPORTED(0x0000_000D),
+    INVALID_SESSION_PROPERTY(0x0000_000E),
 
     INTERNAL(0x0001_0000),
     TOO_MANY_REQUESTS_FAILED(0x0001_0001),
@@ -41,6 +43,7 @@ public enum StandardErrorCode
 
     INSUFFICIENT_RESOURCES(0x0002_0000),
     EXCEEDED_MEMORY_LIMIT(0x0002_0001),
+    QUERY_QUEUE_FULL(0x0002_0002),
 
     // Connectors can use error codes starting at EXTERNAL
     EXTERNAL(0x0100_0000);
@@ -52,6 +55,7 @@ public enum StandardErrorCode
         errorCode = new ErrorCode(code, name());
     }
 
+    @Override
     public ErrorCode toErrorCode()
     {
         return errorCode;

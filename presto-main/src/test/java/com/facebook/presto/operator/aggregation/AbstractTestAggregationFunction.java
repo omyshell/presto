@@ -13,11 +13,16 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.block.rle.RunLengthEncodedBlock;
+import com.facebook.presto.testing.RunLengthEncodedBlock;
+import com.facebook.presto.metadata.FunctionRegistry;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.block.BlockBuilderStatus;
 import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.sql.tree.QualifiedName;
+import com.facebook.presto.type.TypeRegistry;
+import com.facebook.presto.type.TypeUtils;
+import com.google.common.collect.Lists;
 import org.testng.annotations.Test;
 
 import java.util.List;
@@ -26,9 +31,22 @@ import static com.facebook.presto.operator.aggregation.AggregationTestUtils.asse
 
 public abstract class AbstractTestAggregationFunction
 {
+    protected final FunctionRegistry functionRegistry = new FunctionRegistry(new TypeRegistry(), true);
     public abstract Block getSequenceBlock(int start, int length);
 
-    public abstract InternalAggregationFunction getFunction();
+    protected final InternalAggregationFunction getFunction()
+    {
+        return functionRegistry.resolveFunction(QualifiedName.of(getFunctionName()), Lists.transform(getFunctionParameterTypes(), TypeUtils.typeSignatureParser()), isApproximate()).getAggregationFunction();
+    }
+
+    protected abstract String getFunctionName();
+
+    protected abstract List<String> getFunctionParameterTypes();
+
+    protected boolean isApproximate()
+    {
+        return false;
+    }
 
     public abstract Object getExpectedValue(int start, int length);
 

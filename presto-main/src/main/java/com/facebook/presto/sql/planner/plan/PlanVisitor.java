@@ -125,12 +125,17 @@ public class PlanVisitor<C, R>
         return visitPlan(node, context);
     }
 
+    public R visitUnnest(UnnestNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
     public R visitMarkDistinct(MarkDistinctNode node, C context)
     {
         return visitPlan(node, context);
     }
 
-    public R visitRowNumberLimit(RowNumberLimitNode node, C context)
+    public R visitRowNumber(RowNumberNode node, C context)
     {
         return visitPlan(node, context);
     }

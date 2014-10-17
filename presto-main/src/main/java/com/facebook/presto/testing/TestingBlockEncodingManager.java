@@ -14,11 +14,10 @@
 package com.facebook.presto.testing;
 
 import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.block.dictionary.DictionaryBlockEncoding;
-import com.facebook.presto.block.rle.RunLengthBlockEncoding;
-import com.facebook.presto.block.snappy.SnappyBlockEncoding;
 import com.facebook.presto.spi.block.BlockEncodingSerde;
 import com.facebook.presto.spi.block.FixedWidthBlockEncoding;
+import com.facebook.presto.spi.block.LazySliceArrayBlockEncoding;
+import com.facebook.presto.spi.block.SliceArrayBlockEncoding;
 import com.facebook.presto.spi.block.VariableWidthBlockEncoding;
 import com.facebook.presto.type.TypeRegistry;
 
@@ -34,8 +33,7 @@ public final class TestingBlockEncodingManager
                 new TypeRegistry(),
                 VariableWidthBlockEncoding.FACTORY,
                 FixedWidthBlockEncoding.FACTORY,
-                RunLengthBlockEncoding.FACTORY,
-                DictionaryBlockEncoding.FACTORY,
-                SnappyBlockEncoding.FACTORY);
+                SliceArrayBlockEncoding.FACTORY,
+                LazySliceArrayBlockEncoding.FACTORY);
     }
 }

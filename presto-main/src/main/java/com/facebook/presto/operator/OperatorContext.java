@@ -14,7 +14,8 @@
 package com.facebook.presto.operator;
 
 import com.facebook.presto.ExceededMemoryLimitException;
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.Session;
+import com.facebook.presto.spi.Page;
 import com.google.common.base.Function;
 import com.google.common.base.Supplier;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -63,6 +64,7 @@ public class OperatorContext
     private final CounterStat outputDataSize = new CounterStat();
     private final CounterStat outputPositions = new CounterStat();
 
+    private final AtomicReference<BlockedMonitor> blockedMonitor = new AtomicReference<>();
     private final AtomicLong blockedWallNanos = new AtomicLong();
 
     private final AtomicLong finishCalls = new AtomicLong();
@@ -73,6 +75,7 @@ public class OperatorContext
     private final AtomicLong memoryReservation = new AtomicLong();
 
     private final AtomicReference<Supplier<Object>> infoSupplier = new AtomicReference<>();
+    private final boolean collectTimings;
 
     public OperatorContext(int operatorId, String operatorType, DriverContext driverContext, Executor executor)
     {
@@ -81,6 +84,8 @@ public class OperatorContext
         this.operatorType = checkNotNull(operatorType, "operatorType is null");
         this.driverContext = checkNotNull(driverContext, "driverContext is null");
         this.executor = checkNotNull(executor, "executor is null");
+
+        collectTimings = driverContext.isVerboseStats() && driverContext.isCpuTimerEnabled();
     }
 
     public int getOperatorId()
@@ -98,7 +103,7 @@ public class OperatorContext
         return driverContext;
     }
 
-    public ConnectorSession getSession()
+    public Session getSession()
     {
         return driverContext.getSession();
     }
@@ -118,26 +123,31 @@ public class OperatorContext
     public void recordAddInput(Page page)
     {
         addInputCalls.incrementAndGet();
-        addInputWallNanos.getAndAdd(nanosBetween(intervalWallStart.get(), System.nanoTime()));
+        recordInputWallNanos(nanosBetween(intervalWallStart.get(), System.nanoTime()));
         addInputCpuNanos.getAndAdd(nanosBetween(intervalCpuStart.get(), currentThreadCpuTime()));
         addInputUserNanos.getAndAdd(nanosBetween(intervalUserStart.get(), currentThreadUserTime()));
 
         if (page != null) {
-            inputDataSize.update(page.getDataSize().toBytes());
+            inputDataSize.update(page.getSizeInBytes());
             inputPositions.update(page.getPositionCount());
         }
     }
 
-    public void recordGeneratedInput(DataSize dataSize, long positions, long readNanos)
+    public void recordGeneratedInput(long sizeInBytes, long positions)
     {
-        inputDataSize.update(dataSize.toBytes());
-        inputPositions.update(positions);
-        addInputWallNanos.getAndAdd(readNanos);
+        recordGeneratedInput(sizeInBytes, positions, 0);
     }
 
-    public void recordGeneratedInput(DataSize dataSize, long positions)
+    public void recordGeneratedInput(long sizeInBytes, long positions, long readNanos)
     {
-        recordGeneratedInput(dataSize, positions, 0);
+        inputDataSize.update(sizeInBytes);
+        inputPositions.update(positions);
+        recordInputWallNanos(readNanos);
+    }
+
+    public long recordInputWallNanos(long readNanos)
+    {
+        return addInputWallNanos.getAndAdd(readNanos);
     }
 
     public void recordGetOutput(Page page)
@@ -148,30 +158,30 @@ public class OperatorContext
         getOutputUserNanos.getAndAdd(nanosBetween(intervalUserStart.get(), currentThreadUserTime()));
 
         if (page != null) {
-            outputDataSize.update(page.getDataSize().toBytes());
+            outputDataSize.update(page.getSizeInBytes());
             outputPositions.update(page.getPositionCount());
         }
     }
 
-    public void recordGeneratedOutput(DataSize dataSize, long positions)
+    public void recordGeneratedOutput(long sizeInBytes, long positions)
     {
-        outputDataSize.update(dataSize.toBytes());
+        outputDataSize.update(sizeInBytes);
         outputPositions.update(positions);
     }
 
     public void recordBlocked(ListenableFuture<?> blocked)
     {
         checkNotNull(blocked, "blocked is null");
-        blocked.addListener(new Runnable()
-        {
-            private final long start = System.nanoTime();
 
-            @Override
-            public void run()
-            {
-                blockedWallNanos.getAndAdd(nanosBetween(start, System.nanoTime()));
-            }
-        }, executor);
+        BlockedMonitor monitor = new BlockedMonitor();
+
+        BlockedMonitor oldMonitor = blockedMonitor.getAndSet(monitor);
+        if (oldMonitor != null) {
+            oldMonitor.run();
+        }
+
+        blocked.addListener(monitor, executor);
+        driverContext.recordBlocked(blocked);
     }
 
     public void recordFinish()
@@ -286,7 +296,7 @@ public class OperatorContext
 
     private long currentThreadUserTime()
     {
-        if (!driverContext.isCpuTimerEnabled()) {
+        if (!collectTimings) {
             return 0;
         }
         return THREAD_MX_BEAN.getCurrentThreadUserTime();
@@ -294,7 +304,7 @@ public class OperatorContext
 
     private long currentThreadCpuTime()
     {
-        if (!driverContext.isCpuTimerEnabled()) {
+        if (!collectTimings) {
             return 0;
         }
         return THREAD_MX_BEAN.getCurrentThreadCpuTime();
@@ -309,10 +319,36 @@ public class OperatorContext
     {
         return new Function<OperatorContext, OperatorStats>()
         {
+            @Override
             public OperatorStats apply(OperatorContext operatorContext)
             {
                 return operatorContext.getOperatorStats();
             }
         };
+    }
+
+    private class BlockedMonitor
+            implements Runnable
+    {
+        private final long start = System.nanoTime();
+        private boolean finished;
+
+        @Override
+        public synchronized void run()
+        {
+            synchronized (this) {
+                if (finished) {
+                    return;
+                }
+                finished = true;
+                blockedMonitor.compareAndSet(this, null);
+                blockedWallNanos.getAndAdd(getBlockedTime());
+            }
+        }
+
+        public long getBlockedTime()
+        {
+            return nanosBetween(start, System.nanoTime());
+        }
     }
 }

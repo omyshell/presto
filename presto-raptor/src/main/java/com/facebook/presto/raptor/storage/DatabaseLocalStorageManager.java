@@ -13,21 +13,15 @@
  */
 package com.facebook.presto.raptor.storage;
 
-import com.facebook.presto.execution.TaskId;
-import com.facebook.presto.operator.AlignmentOperator;
-import com.facebook.presto.operator.OperatorContext;
-import com.facebook.presto.operator.Page;
-import com.facebook.presto.operator.TaskContext;
 import com.facebook.presto.raptor.RaptorColumnHandle;
-import com.facebook.presto.serde.BlocksFileEncoding;
-import com.facebook.presto.serde.BlocksFileReader;
-import com.facebook.presto.serde.BlocksFileStats;
+import com.facebook.presto.raptor.RaptorPageSource;
+import com.facebook.presto.raptor.block.BlocksFileReader;
+import com.facebook.presto.raptor.util.KeyBoundedExecutor;
 import com.facebook.presto.spi.ConnectorColumnHandle;
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.ConnectorPageSource;
+import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.BlockEncodingSerde;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.util.KeyBoundedExecutor;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.cache.CacheBuilder;
@@ -53,30 +47,24 @@ import javax.annotation.PreDestroy;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 
-import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
-import static com.facebook.presto.util.Types.checkType;
+import static com.facebook.presto.raptor.util.Types.checkType;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.concurrent.Threads.threadsNamed;
 import static java.lang.String.format;
 import static java.nio.file.Files.createDirectories;
+import static java.util.Locale.ENGLISH;
 import static java.util.concurrent.Executors.newFixedThreadPool;
 
 public class DatabaseLocalStorageManager
         implements LocalStorageManager
 {
-    private static final boolean ENABLE_OPTIMIZATION = false;
-
-    private static final int RUN_LENGTH_AVERAGE_CUTOFF = 3;
-    private static final int DICTIONARY_CARDINALITY_CUTOFF = 1000;
-
     private static final Logger log = Logger.get(DatabaseLocalStorageManager.class);
 
     private final ExecutorService executor;
@@ -103,7 +91,6 @@ public class DatabaseLocalStorageManager
             return Slices.mapFileReadOnly(file);
         }
     });
-    private final BlocksFileEncoding defaultEncoding;
 
     @Inject
     public DatabaseLocalStorageManager(@ForLocalStorageManager IDBI dbi, BlockEncodingSerde blockEncodingSerde, DatabaseLocalStorageManagerConfig config)
@@ -123,13 +110,6 @@ public class DatabaseLocalStorageManager
         this.shardBoundedExecutor = new KeyBoundedExecutor<>(executor);
 
         dao.createTableColumns();
-
-        if (config.isCompressed()) {
-            defaultEncoding = BlocksFileEncoding.SNAPPY;
-        }
-        else {
-            defaultEncoding = BlocksFileEncoding.RAW;
-        }
     }
 
     @PreDestroy
@@ -154,9 +134,9 @@ public class DatabaseLocalStorageManager
         ColumnFileHandle.Builder builder = ColumnFileHandle.builder(shardUuid, blockEncodingSerde);
 
         for (RaptorColumnHandle columnHandle : columnHandles) {
-            File file = getColumnFile(shardPath, columnHandle, defaultEncoding);
+            File file = getColumnFile(shardPath, columnHandle);
             Files.createParentDirs(file);
-            builder.addColumn(columnHandle, file, defaultEncoding);
+            builder.addColumn(columnHandle, file);
         }
 
         return builder.build();
@@ -186,59 +166,27 @@ public class DatabaseLocalStorageManager
         UUID shardUuid = columnFileHandle.getShardUuid();
         File shardPath = getShardPath(baseStorageDir, shardUuid);
 
-        ImmutableList.Builder<Type> types = ImmutableList.builder();
         ImmutableList.Builder<Iterable<Block>> sourcesBuilder = ImmutableList.builder();
         ColumnFileHandle.Builder builder = ColumnFileHandle.builder(shardUuid, blockEncodingSerde);
 
         for (Map.Entry<ConnectorColumnHandle, File> entry : columnFileHandle.getFiles().entrySet()) {
             File file = entry.getValue();
             RaptorColumnHandle columnHandle = checkType(entry.getKey(), RaptorColumnHandle.class, "columnHandle");
-            types.add(columnHandle.getColumnType());
 
             if (file.length() > 0) {
                 Slice slice = mappedFileCache.getUnchecked(file.getAbsoluteFile());
                 checkState(file.length() == slice.length(), "File %s, length %s was mapped to Slice length %s", file.getAbsolutePath(), file.length(), slice.length());
-                // Compute optimal encoding from stats
-                BlocksFileReader blocks = BlocksFileReader.readBlocks(blockEncodingSerde, slice);
-                BlocksFileStats stats = blocks.getStats();
-                boolean rleEncode = stats.getAvgRunLength() > RUN_LENGTH_AVERAGE_CUTOFF;
-                boolean dicEncode = stats.getUniqueCount() < DICTIONARY_CARDINALITY_CUTOFF;
 
-                BlocksFileEncoding encoding = defaultEncoding;
-
-                if (ENABLE_OPTIMIZATION) {
-                    if (dicEncode && rleEncode) {
-                        encoding = BlocksFileEncoding.DIC_RLE;
-                    }
-                    else if (dicEncode) {
-                        encoding = BlocksFileEncoding.DIC_RAW;
-                    }
-                    else if (rleEncode) {
-                        encoding = BlocksFileEncoding.RLE;
-                    }
-                }
-
-                File outputFile = getColumnFile(shardPath, columnHandle, encoding);
+                File outputFile = getColumnFile(shardPath, columnHandle);
                 Files.createParentDirs(outputFile);
 
-                if (encoding == defaultEncoding) {
-                    // Optimization: source is already raw, so just move.
-                    Files.move(file, outputFile);
-                    // still register the file with the builder so that it can
-                    // be committed correctly.
-                    builder.addColumn(columnHandle, outputFile);
-                }
-                else {
-                    // source builder and output builder move in parallel if the
-                    // column gets written
-                    sourcesBuilder.add(blocks);
-                    builder.addColumn(columnHandle, outputFile, encoding);
-                }
+                Files.move(file, outputFile);
+                builder.addExistingColumn(columnHandle, outputFile);
             }
             else {
                 // fake file
-                File outputFile = getColumnFile(shardPath, columnHandle, defaultEncoding);
-                builder.addColumn(columnHandle, outputFile);
+                File outputFile = getColumnFile(shardPath, columnHandle);
+                builder.addExistingColumn(columnHandle, outputFile);
             }
         }
 
@@ -247,14 +195,7 @@ public class DatabaseLocalStorageManager
 
         if (!sources.isEmpty()) {
             // Throw out any stats generated by the optimization step
-            ConnectorSession session = new ConnectorSession("user", "source", "catalog", "schema", UTC_KEY, Locale.ENGLISH, "address", "agent");
-            OperatorContext operatorContext = new TaskContext(new TaskId("query", "stage", "task"), executor, session)
-                    .addPipelineContext(true, true)
-                    .addDriverContext()
-                    .addOperatorContext(0, "OptimizeEncodings");
-
-            AlignmentOperator source = new AlignmentOperator(operatorContext, types.build(), sources);
-            importData(source, targetFileHandle);
+            importData(new RaptorPageSource(sources), targetFileHandle);
         }
 
         targetFileHandle.commit();
@@ -272,14 +213,13 @@ public class DatabaseLocalStorageManager
         }
     }
 
-    private static void importData(AlignmentOperator source, ColumnFileHandle fileHandle)
+    private static void importData(ConnectorPageSource source, ColumnFileHandle fileHandle)
     {
         while (!source.isFinished()) {
-            Page page = source.getOutput();
+            Page page = source.getNextPage();
             if (page != null) {
                 fileHandle.append(page);
             }
-            checkState(source.isBlocked().isDone(), "Alignment operator is blocked");
         }
     }
 
@@ -302,7 +242,7 @@ public class DatabaseLocalStorageManager
     @VisibleForTesting
     static File getShardPath(File baseDir, UUID shardUuid)
     {
-        String uuid = shardUuid.toString().toLowerCase();
+        String uuid = shardUuid.toString().toLowerCase(ENGLISH);
         return baseDir.toPath()
                 .resolve(uuid.substring(0, 2))
                 .resolve(uuid.substring(2, 4))
@@ -311,10 +251,10 @@ public class DatabaseLocalStorageManager
                 .toFile();
     }
 
-    private static File getColumnFile(File shardPath, ConnectorColumnHandle columnHandle, BlocksFileEncoding encoding)
+    private static File getColumnFile(File shardPath, ConnectorColumnHandle columnHandle)
     {
         long columnId = checkType(columnHandle, RaptorColumnHandle.class, "columnHandle").getColumnId();
-        return new File(shardPath, format("%s.%s.column", columnId, encoding.getName()));
+        return new File(shardPath, format("%s.%s.column", columnId, "raw"));
     }
 
     private void commitShardColumns(final ColumnFileHandle columnFileHandle)

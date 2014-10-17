@@ -15,7 +15,7 @@ package com.facebook.presto.operator.aggregation;
 
 import com.facebook.presto.block.BlockAssertions;
 import com.facebook.presto.operator.OperatorAssertion;
-import com.facebook.presto.operator.Page;
+import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.block.BlockBuilderStatus;
@@ -47,6 +47,18 @@ public abstract class AbstractTestApproximateAggregationFunction
     public double getConfidence()
     {
         return 0.5;
+    }
+
+    @Override
+    protected boolean isApproximate()
+    {
+        return true;
+    }
+
+    @Override
+    protected List<String> getFunctionParameterTypes()
+    {
+        return ImmutableList.of(getType().getTypeSignature().toString());
     }
 
     @Override

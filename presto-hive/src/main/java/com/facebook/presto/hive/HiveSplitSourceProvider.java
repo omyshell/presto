@@ -23,6 +23,8 @@ import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.TupleDomain;
+import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
 import com.google.common.base.Throwables;
@@ -41,7 +43,6 @@ import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat;
-import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector;
 import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapred.InputFormat;
@@ -55,7 +56,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -70,17 +70,21 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static com.facebook.presto.hadoop.HadoopFileStatus.isFile;
 import static com.facebook.presto.hive.HiveBucketing.HiveBucket;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILE_NOT_FOUND;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNKNOWN_ERROR;
 import static com.facebook.presto.hive.HiveType.getSupportedHiveType;
-import static com.facebook.presto.hive.HiveUtil.convertNativeHiveType;
 import static com.facebook.presto.hive.HiveUtil.getInputFormat;
 import static com.facebook.presto.hive.HiveUtil.isSplittable;
 import static com.facebook.presto.hive.UnpartitionedPartition.isUnpartitioned;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 class HiveSplitSourceProvider
 {
+    public static final String FORCE_LOCAL_SCHEDULING = "force_local_scheduling";
+
     private static final ConnectorSplit FINISHED_MARKER = new ConnectorSplit()
     {
         @Override
@@ -104,8 +108,7 @@ class HiveSplitSourceProvider
 
     private final String connectorId;
     private final Table table;
-    private final Iterable<String> partitionNames;
-    private final Iterable<Partition> partitions;
+    private final Iterable<HivePartitionMetadata> partitions;
     private final Optional<HiveBucket> bucket;
     private final int maxOutstandingSplits;
     private final int maxThreads;
@@ -120,11 +123,11 @@ class HiveSplitSourceProvider
     private long remainingInitialSplits;
     private final ConnectorSession session;
     private final boolean recursiveDirWalkerEnabled;
+    private final boolean forceLocalScheduling;
 
     HiveSplitSourceProvider(String connectorId,
             Table table,
-            Iterable<String> partitionNames,
-            Iterable<Partition> partitions,
+            Iterable<HivePartitionMetadata> partitions,
             Optional<HiveBucket> bucket,
             DataSize maxSplitSize,
             int maxOutstandingSplits,
@@ -137,11 +140,11 @@ class HiveSplitSourceProvider
             ConnectorSession session,
             DataSize maxInitialSplitSize,
             int maxInitialSplits,
+            boolean forceLocalScheduling,
             boolean recursiveDirWalkerEnabled)
     {
         this.connectorId = connectorId;
         this.table = table;
-        this.partitionNames = partitionNames;
         this.partitions = partitions;
         this.bucket = bucket;
         this.maxSplitSize = maxSplitSize;
@@ -157,6 +160,7 @@ class HiveSplitSourceProvider
         this.maxInitialSplitSize = maxInitialSplitSize;
         this.remainingInitialSplits = maxInitialSplits;
         this.recursiveDirWalkerEnabled = recursiveDirWalkerEnabled;
+        this.forceLocalScheduling = forceLocalScheduling;
     }
 
     public ConnectorSplitSource get()
@@ -188,16 +192,14 @@ class HiveSplitSourceProvider
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
             ImmutableList.Builder<ListenableFuture<Void>> futureBuilder = ImmutableList.builder();
 
-            Iterator<String> nameIterator = partitionNames.iterator();
-            for (Partition partition : partitions) {
-                checkState(nameIterator.hasNext(), "different number of partitions and partition names!");
-                final String partitionName = nameIterator.next();
-                final Properties schema = getPartitionSchema(table, partition);
-                final List<HivePartitionKey> partitionKeys = getPartitionKeys(table, partition);
+            for (HivePartitionMetadata partition : partitions) {
+                final String partitionName = partition.getHivePartition().getPartitionId();
+                final Properties schema = getPartitionSchema(table, partition.getPartition());
+                final List<HivePartitionKey> partitionKeys = getPartitionKeys(table, partition.getPartition());
+                final TupleDomain<HiveColumnHandle> tupleDomain = (TupleDomain<HiveColumnHandle>) (Object) partition.getHivePartition().getTupleDomain();
 
-                Path path = new Path(getPartitionLocation(table, partition));
-
-                final Configuration configuration = hdfsEnvironment.getConfiguration(path);
+                Path path = new Path(getPartitionLocation(table, partition.getPartition()));
+                Configuration configuration = hdfsEnvironment.getConfiguration(path);
                 final InputFormat<?, ?> inputFormat = getInputFormat(configuration, schema, false);
 
                 if (inputFormat instanceof SymlinkTextInputFormat) {
@@ -219,7 +221,8 @@ class HiveSplitSourceProvider
                                 schema,
                                 partitionKeys,
                                 false,
-                                session));
+                                session,
+                                tupleDomain));
                     }
                     continue;
                 }
@@ -233,7 +236,7 @@ class HiveSplitSourceProvider
                         BlockLocation[] blockLocations = fs.getFileBlockLocations(file, 0, file.getLen());
                         boolean splittable = isSplittable(inputFormat, fs, file.getPath());
 
-                        hiveSplitSource.addToQueue(createHiveSplits(partitionName, file, blockLocations, 0, file.getLen(), schema, partitionKeys, splittable, session));
+                        hiveSplitSource.addToQueue(createHiveSplits(partitionName, file, blockLocations, 0, file.getLen(), schema, partitionKeys, splittable, session, tupleDomain));
                         continue;
                     }
                 }
@@ -257,7 +260,17 @@ class HiveSplitSourceProvider
                         try {
                             boolean splittable = isSplittable(inputFormat, hdfsEnvironment.getFileSystem(file.getPath()), file.getPath());
 
-                            hiveSplitSource.addToQueue(createHiveSplits(partitionName, file, blockLocations, 0, file.getLen(), schema, partitionKeys, splittable, session));
+                            hiveSplitSource.addToQueue(createHiveSplits(
+                                    partitionName,
+                                    file,
+                                    blockLocations,
+                                    0,
+                                    file.getLen(),
+                                    schema,
+                                    partitionKeys,
+                                    splittable,
+                                    session,
+                                    tupleDomain));
                         }
                         catch (IOException e) {
                             hiveSplitSource.fail(e);
@@ -356,10 +369,14 @@ class HiveSplitSourceProvider
             Properties schema,
             List<HivePartitionKey> partitionKeys,
             boolean splittable,
-            ConnectorSession session)
+            ConnectorSession session,
+            TupleDomain<HiveColumnHandle> tupleDomain)
             throws IOException
     {
         ImmutableList.Builder<HiveSplit> builder = ImmutableList.builder();
+
+        boolean forceLocalScheduling = getForceLocalScheduling(session);
+
         if (splittable) {
             for (BlockLocation blockLocation : blockLocations) {
                 // get the addresses for the block
@@ -391,7 +408,9 @@ class HiveSplitSourceProvider
                             schema,
                             partitionKeys,
                             addresses,
-                            session));
+                            forceLocalScheduling,
+                            session,
+                            tupleDomain));
 
                     chunkOffset += chunkLength;
                     remainingInitialSplits--;
@@ -416,9 +435,26 @@ class HiveSplitSourceProvider
                     schema,
                     partitionKeys,
                     addresses,
-                    session));
+                    forceLocalScheduling,
+                    session,
+                    tupleDomain));
         }
         return builder.build();
+    }
+
+    private boolean getForceLocalScheduling(ConnectorSession session)
+    {
+        String forceLocalScheduling = session.getProperties().get(FORCE_LOCAL_SCHEDULING);
+        if (forceLocalScheduling == null) {
+            return this.forceLocalScheduling;
+        }
+
+        try {
+            return Boolean.valueOf(forceLocalScheduling);
+        }
+        catch (IllegalArgumentException e) {
+            throw new PrestoException(NOT_SUPPORTED, "Invalid Hive session property '" + FORCE_LOCAL_SCHEDULING + "=" + forceLocalScheduling + "'");
+        }
     }
 
     private static List<HostAddress> toHostAddress(String[] hosts)
@@ -586,9 +622,9 @@ class HiveSplitSourceProvider
                 throw (PrestoException) throwable;
             }
             if (throwable instanceof FileNotFoundException) {
-                throw new PrestoException(HiveErrorCode.HIVE_FILE_NOT_FOUND.toErrorCode(), throwable);
+                throw new PrestoException(HIVE_FILE_NOT_FOUND, throwable);
             }
-            throw new PrestoException(HiveErrorCode.HIVE_UNKNOWN_ERROR.toErrorCode(), throwable);
+            throw new PrestoException(HIVE_UNKNOWN_ERROR, throwable);
         }
     }
 
@@ -603,8 +639,7 @@ class HiveSplitSourceProvider
         checkArgument(keys.size() == values.size(), "Expected %s partition key values, but got %s", keys.size(), values.size());
         for (int i = 0; i < keys.size(); i++) {
             String name = keys.get(i).getName();
-            PrimitiveObjectInspector.PrimitiveCategory primitiveCategory = convertNativeHiveType(keys.get(i).getType());
-            HiveType hiveType = getSupportedHiveType(primitiveCategory);
+            HiveType hiveType = getSupportedHiveType(keys.get(i).getType());
             String value = values.get(i);
             checkNotNull(value, "partition key value cannot be null for field: %s", name);
             partitionKeys.add(new HivePartitionKey(name, hiveType, value));

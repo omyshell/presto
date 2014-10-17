@@ -20,6 +20,8 @@ import com.facebook.presto.spi.block.BlockBuilderStatus;
 import com.fasterxml.jackson.annotation.JsonValue;
 import io.airlift.slice.Slice;
 
+import java.util.List;
+
 public interface Type
 {
     /**
@@ -27,7 +29,7 @@ public interface Type
      * The name of a user defined type must be a legal identifier in Presto.
      */
     @JsonValue
-    String getName();
+    TypeSignature getTypeSignature();
 
     /**
      * True if the type supports equalTo and hash.
@@ -48,6 +50,11 @@ public interface Type
      * Currently, this must be boolean, long, double, or Slice.
      */
     Class<?> getJavaType();
+
+    /**
+     * For parameterized types returns the list of parameters.
+     */
+    List<Type> getTypeParameters();
 
     /**
      * Creates a block builder for this type. This is the builder used to

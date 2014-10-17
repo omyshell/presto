@@ -14,9 +14,9 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.OutputBuffers;
+import com.facebook.presto.Session;
 import com.facebook.presto.TaskSource;
 import com.facebook.presto.event.query.QueryMonitor;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.sql.planner.LocalExecutionPlanner;
 import com.facebook.presto.sql.planner.PlanFragment;
 import com.google.common.base.Function;
@@ -159,6 +159,7 @@ public class SqlTaskManager
         }, 0, 1, TimeUnit.SECONDS);
     }
 
+    @Override
     @PreDestroy
     public void close()
     {
@@ -211,7 +212,7 @@ public class SqlTaskManager
     }
 
     @Override
-    public TaskInfo updateTask(ConnectorSession session, TaskId taskId, PlanFragment fragment, List<TaskSource> sources, OutputBuffers outputBuffers)
+    public TaskInfo updateTask(Session session, TaskId taskId, PlanFragment fragment, List<TaskSource> sources, OutputBuffers outputBuffers)
     {
         checkNotNull(session, "session is null");
         checkNotNull(taskId, "taskId is null");
@@ -223,7 +224,7 @@ public class SqlTaskManager
     }
 
     @Override
-    public ListenableFuture<BufferResult> getTaskResults(TaskId taskId, String outputName, long startingSequenceId, DataSize maxSize)
+    public ListenableFuture<BufferResult> getTaskResults(TaskId taskId, TaskId outputName, long startingSequenceId, DataSize maxSize)
     {
         checkNotNull(taskId, "taskId is null");
         checkNotNull(outputName, "outputName is null");
@@ -234,7 +235,7 @@ public class SqlTaskManager
     }
 
     @Override
-    public TaskInfo abortTaskResults(TaskId taskId, String outputId)
+    public TaskInfo abortTaskResults(TaskId taskId, TaskId outputId)
     {
         checkNotNull(taskId, "taskId is null");
         checkNotNull(outputId, "outputId is null");

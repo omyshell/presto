@@ -13,10 +13,11 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.event.query.QueryMonitor;
 import com.facebook.presto.execution.QueryExecution.QueryExecutionFactory;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.sql.parser.ParsingException;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.tree.Statement;
@@ -57,6 +58,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.facebook.presto.spi.StandardErrorCode.QUERY_QUEUE_FULL;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Predicates.compose;
@@ -112,13 +114,14 @@ public class SqlQueryManager
 
         this.queryExecutor = newCachedThreadPool(threadsNamed("query-scheduler-%d"));
         this.queryExecutorMBean = new ThreadPoolExecutorMBean((ThreadPoolExecutor) queryExecutor);
-        this.queryStarter = new QueryStarter(queryExecutor, stats, config.getMaxConcurrentQueries());
+
+        checkNotNull(config, "config is null");
+        this.queryStarter = new QueryStarter(queryExecutor, stats, config.getMaxConcurrentQueries(), config.getMaxQueuedQueries());
 
         this.queryMonitor = checkNotNull(queryMonitor, "queryMonitor is null");
         this.locationFactory = checkNotNull(locationFactory, "locationFactory is null");
         this.queryIdGenerator = checkNotNull(queryIdGenerator, "queryIdGenerator is null");
 
-        checkNotNull(config, "config is null");
         this.maxQueryAge = config.getMaxQueryAge();
         this.maxQueryHistory = config.getMaxQueryHistory();
         this.clientTimeout = config.getClientTimeout();
@@ -202,7 +205,7 @@ public class SqlQueryManager
     }
 
     @Override
-    public QueryInfo createQuery(ConnectorSession session, String query)
+    public QueryInfo createQuery(Session session, String query)
     {
         checkNotNull(query, "query is null");
         Preconditions.checkArgument(!query.isEmpty(), "query must not be empty string");
@@ -239,7 +242,9 @@ public class SqlQueryManager
         queries.put(queryId, queryExecution);
 
         // start the query in the background
-        queryStarter.submit(queryExecution);
+        if (!queryStarter.submit(queryExecution)) {
+            return createFailedQuery(session, query, queryId, new PrestoException(QUERY_QUEUE_FULL, "Too many queued queries!"));
+        }
 
         return queryExecution.getQueryInfo();
     }
@@ -364,7 +369,7 @@ public class SqlQueryManager
         return lastHeartbeat != null && lastHeartbeat.isBefore(oldestAllowedHeartbeat);
     }
 
-    private QueryInfo createFailedQuery(ConnectorSession session, String query, QueryId queryId, Throwable cause)
+    private QueryInfo createFailedQuery(Session session, String query, QueryId queryId, Throwable cause)
     {
         URI self = locationFactory.createQueryLocation(queryId);
         QueryExecution execution = new FailedQueryExecution(queryId, query, session, self, queryExecutor, cause);
@@ -393,22 +398,29 @@ public class SqlQueryManager
 
     private static class QueryStarter
     {
+        private final int maxQueuedQueries;
         private final AtomicInteger queueSize = new AtomicInteger();
         private final AsyncSemaphore<QueryExecution> asyncSemaphore;
 
-        public QueryStarter(Executor queryExecutor, SqlQueryManagerStats stats, int maxConcurrentQueries)
+        public QueryStarter(Executor queryExecutor, SqlQueryManagerStats stats, int maxConcurrentQueries, int maxQueuedQueries)
         {
             checkNotNull(queryExecutor, "queryExecutor is null");
             checkNotNull(stats, "stats is null");
             checkArgument(maxConcurrentQueries > 0, "must allow at least one running query");
+            checkArgument(maxQueuedQueries > 0, "must allow at least one query in the queue");
 
+            this.maxQueuedQueries = maxQueuedQueries;
             this.asyncSemaphore = new AsyncSemaphore<>(maxConcurrentQueries, queryExecutor, new QuerySubmitter(queryExecutor, stats));
         }
 
-        public void submit(QueryExecution queryExecution)
+        public boolean submit(QueryExecution queryExecution)
         {
-            queueSize.incrementAndGet();
+            if (queueSize.incrementAndGet() > maxQueuedQueries) {
+                queueSize.decrementAndGet();
+                return false;
+            }
             asyncSemaphore.submit(queryExecution);
+            return true;
         }
 
         public int getQueueSize()

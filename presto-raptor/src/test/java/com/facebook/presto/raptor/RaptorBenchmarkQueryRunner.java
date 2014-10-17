@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.raptor;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.benchmark.BenchmarkSuite;
 import com.facebook.presto.metadata.InMemoryNodeManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.QualifiedTableName;
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.ConnectorFactory;
 import com.facebook.presto.spi.NodeManager;
 import com.facebook.presto.spi.block.BlockEncodingSerde;
 import com.facebook.presto.spi.type.TypeManager;
@@ -29,12 +30,13 @@ import com.google.common.collect.ImmutableMap;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Locale;
 import java.util.Map;
 
 import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.testing.TestingBlockEncodingManager.createTestingBlockEncodingManager;
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.collect.Iterables.getOnlyElement;
+import static java.util.Locale.ENGLISH;
 
 public final class RaptorBenchmarkQueryRunner
 {
@@ -55,7 +57,14 @@ public final class RaptorBenchmarkQueryRunner
 
     public static LocalQueryRunner createLocalQueryRunner()
     {
-        ConnectorSession session = new ConnectorSession("user", "test", "default", "default", UTC_KEY, Locale.ENGLISH, null, null);
+        Session session = Session.builder()
+                .setUser("user")
+                .setSource("test")
+                .setCatalog("default")
+                .setSchema("default")
+                .setTimeZoneKey(UTC_KEY)
+                .setLocale(ENGLISH)
+                .build();
         LocalQueryRunner localQueryRunner = new LocalQueryRunner(session);
 
         // add tpch
@@ -63,7 +72,7 @@ public final class RaptorBenchmarkQueryRunner
         localQueryRunner.createCatalog("tpch", new TpchConnectorFactory(nodeManager, 1), ImmutableMap.<String, String>of());
 
         // add raptor
-        RaptorConnectorFactory raptorConnectorFactory = createRaptorConnectorFactory(TPCH_CACHE_DIR, nodeManager);
+        ConnectorFactory raptorConnectorFactory = createRaptorConnectorFactory(TPCH_CACHE_DIR, nodeManager);
         localQueryRunner.createCatalog("default", raptorConnectorFactory, ImmutableMap.<String, String>of());
 
         Metadata metadata = localQueryRunner.getMetadata();
@@ -76,7 +85,7 @@ public final class RaptorBenchmarkQueryRunner
         return localQueryRunner;
     }
 
-    private static RaptorConnectorFactory createRaptorConnectorFactory(String cacheDir, NodeManager nodeManager)
+    private static ConnectorFactory createRaptorConnectorFactory(String cacheDir, NodeManager nodeManager)
     {
         try {
             File dataDir = new File(cacheDir);
@@ -92,7 +101,14 @@ public final class RaptorBenchmarkQueryRunner
             BlockEncodingSerde blockEncodingSerde = createTestingBlockEncodingManager();
             TypeManager typeManager = new TypeRegistry();
 
-            return new RaptorConnectorFactory(config, nodeManager, blockEncodingSerde, typeManager);
+            RaptorPlugin plugin = new RaptorPlugin();
+
+            plugin.setOptionalConfig(config);
+            plugin.setNodeManager(nodeManager);
+            plugin.setBlockEncodingSerde(blockEncodingSerde);
+            plugin.setTypeManager(typeManager);
+
+            return getOnlyElement(plugin.getServices(ConnectorFactory.class));
         }
         catch (Exception e) {
             throw Throwables.propagate(e);

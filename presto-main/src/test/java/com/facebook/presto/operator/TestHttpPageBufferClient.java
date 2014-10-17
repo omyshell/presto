@@ -14,7 +14,7 @@
 package com.facebook.presto.operator;
 
 import com.facebook.presto.operator.HttpPageBufferClient.ClientCallback;
-import com.facebook.presto.spi.StandardErrorCode;
+import com.facebook.presto.spi.Page;
 import com.google.common.base.Function;
 import com.google.common.base.Stopwatch;
 import com.google.common.base.Throwables;
@@ -47,6 +47,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.facebook.presto.PrestoMediaTypes.PRESTO_PAGES;
+import static com.facebook.presto.spi.StandardErrorCode.PAGE_TOO_LARGE;
+import static com.facebook.presto.spi.StandardErrorCode.PAGE_TRANSPORT_ERROR;
+import static com.facebook.presto.spi.StandardErrorCode.PAGE_TRANSPORT_TIMEOUT;
 import static com.facebook.presto.testing.TestingBlockEncodingManager.createTestingBlockEncodingManager;
 import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
@@ -368,9 +371,9 @@ public class TestHttpPageBufferClient
     public void testErrorCodes()
             throws Exception
     {
-        assertEquals(new PageTooLargeException().getErrorCode(), StandardErrorCode.PAGE_TOO_LARGE.toErrorCode());
-        assertEquals(new PageTransportErrorException("").getErrorCode(), StandardErrorCode.PAGE_TRANSPORT_ERROR.toErrorCode());
-        assertEquals(new PageTransportTimeoutException("", null).getErrorCode(), StandardErrorCode.PAGE_TRANSPORT_TIMEOUT.toErrorCode());
+        assertEquals(new PageTooLargeException().getErrorCode(), PAGE_TOO_LARGE.toErrorCode());
+        assertEquals(new PageTransportErrorException("").getErrorCode(), PAGE_TRANSPORT_ERROR.toErrorCode());
+        assertEquals(new PageTransportTimeoutException("", null).getErrorCode(), PAGE_TRANSPORT_TIMEOUT.toErrorCode());
     }
 
     private static void assertStatus(

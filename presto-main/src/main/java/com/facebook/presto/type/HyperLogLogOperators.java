@@ -14,21 +14,27 @@
 package com.facebook.presto.type;
 
 import com.facebook.presto.operator.scalar.ScalarOperator;
-import com.facebook.presto.spi.type.HyperLogLogType;
-import com.facebook.presto.spi.type.VarbinaryType;
+import com.facebook.presto.spi.type.StandardTypes;
 import io.airlift.slice.Slice;
 
 import static com.facebook.presto.metadata.OperatorType.CAST;
 
-public class HyperLogLogOperators
+public final class HyperLogLogOperators
 {
     private HyperLogLogOperators()
     {
     }
 
     @ScalarOperator(CAST)
-    @SqlType(VarbinaryType.NAME)
-    public static Slice castToBinary(@SqlType(HyperLogLogType.NAME) Slice slice)
+    @SqlType(StandardTypes.VARBINARY)
+    public static Slice castToBinary(@SqlType(StandardTypes.HYPER_LOG_LOG) Slice slice)
+    {
+        return slice;
+    }
+
+    @ScalarOperator(CAST)
+    @SqlType(StandardTypes.HYPER_LOG_LOG)
+    public static Slice castFromVarbinary(@SqlType(StandardTypes.VARBINARY) Slice slice)
     {
         return slice;
     }

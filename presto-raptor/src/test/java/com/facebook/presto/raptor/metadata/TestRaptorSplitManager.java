@@ -28,14 +28,12 @@ import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.ConnectorTableMetadata;
-import com.facebook.presto.spi.Domain;
-import com.facebook.presto.spi.Range;
-import com.facebook.presto.spi.SortedRangeSet;
 import com.facebook.presto.spi.TupleDomain;
 import com.facebook.presto.spi.type.BigintType;
 import com.facebook.presto.type.TypeRegistry;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
 import com.google.common.io.Files;
 import io.airlift.testing.FileUtils;
 import org.skife.jdbi.v2.DBI;
@@ -47,20 +45,19 @@ import org.testng.annotations.Test;
 import java.io.File;
 import java.net.URI;
 import java.util.List;
-import java.util.Locale;
 import java.util.UUID;
 
+import static com.facebook.presto.raptor.util.Types.checkType;
 import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.util.Types.checkType;
-import static io.airlift.slice.Slices.utf8Slice;
+import static java.util.Locale.ENGLISH;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
 @Test(singleThreaded = true)
 public class TestRaptorSplitManager
 {
-    private static final ConnectorSession SESSION = new ConnectorSession("user", "test", "default", "default", UTC_KEY, Locale.ENGLISH, null, null);
+    private static final ConnectorSession SESSION = new ConnectorSession("user", UTC_KEY, ENGLISH, System.currentTimeMillis(), null);
     private static final ConnectorTableMetadata TEST_TABLE = TableMetadataBuilder.tableMetadataBuilder("demo", "test_table")
             .partitionKeyColumn("ds", VARCHAR)
             .column("foo", VARCHAR)
@@ -71,7 +68,6 @@ public class TestRaptorSplitManager
     private File dataDir;
     private RaptorSplitManager raptorSplitManager;
     private ConnectorTableHandle tableHandle;
-    private ConnectorColumnHandle dsColumnHandle;
 
     @BeforeMethod
     public void setup()
@@ -80,7 +76,6 @@ public class TestRaptorSplitManager
         TypeRegistry typeRegistry = new TypeRegistry();
         DBI dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime());
         dbi.registerMapper(new TableColumn.Mapper(typeRegistry));
-        dbi.registerMapper(new PartitionKey.Mapper(typeRegistry));
         dummyHandle = dbi.open();
         dataDir = Files.createTempDir();
         ShardManager shardManager = new DatabaseShardManager(dbi);
@@ -93,34 +88,19 @@ public class TestRaptorSplitManager
         RaptorMetadata metadata = new RaptorMetadata(connectorId, dbi, shardManager);
 
         tableHandle = metadata.createTable(SESSION, TEST_TABLE);
-        dsColumnHandle = metadata.getColumnHandles(tableHandle).get("ds");
 
-        UUID shardUuid1 = UUID.randomUUID();
-        UUID shardUuid2 = UUID.randomUUID();
-        UUID shardUuid3 = UUID.randomUUID();
-        UUID shardUuid4 = UUID.randomUUID();
+        List<ShardNode> shardNodes = ImmutableList.<ShardNode>builder()
+                .add(new ShardNode(UUID.randomUUID(), nodeName))
+                .add(new ShardNode(UUID.randomUUID(), nodeName))
+                .add(new ShardNode(UUID.randomUUID(), nodeName))
+                .add(new ShardNode(UUID.randomUUID(), nodeName))
+                .build();
 
         long tableId = checkType(tableHandle, RaptorTableHandle.class, "tableHandle").getTableId();
 
-        shardManager.commitPartition(
-                tableId,
-                "ds=1",
-                ImmutableList.of(new PartitionKey("ds=1", "ds", VARCHAR, "1")),
-                ImmutableMap.<UUID, String>builder()
-                        .put(shardUuid1, nodeName)
-                        .put(shardUuid2, nodeName)
-                        .put(shardUuid3, nodeName)
-                        .build());
+        shardManager.commitTable(tableId, shardNodes, Optional.<String>absent());
 
-        shardManager.commitPartition(
-                tableId,
-                "ds=2",
-                ImmutableList.of(new PartitionKey("ds=2", "ds", VARCHAR, "2")),
-                ImmutableMap.<UUID, String>builder()
-                        .put(shardUuid4, nodeName)
-                        .build());
-
-        raptorSplitManager = new RaptorSplitManager(connectorId, nodeManager, shardManager, metadata);
+        raptorSplitManager = new RaptorSplitManager(connectorId, nodeManager, shardManager);
     }
 
     @AfterMethod
@@ -135,12 +115,13 @@ public class TestRaptorSplitManager
             throws InterruptedException
     {
         ConnectorPartitionResult partitionResult = raptorSplitManager.getPartitions(tableHandle, TupleDomain.<ConnectorColumnHandle>all());
-        assertEquals(partitionResult.getPartitions().size(), 2);
+        assertEquals(partitionResult.getPartitions().size(), 1);
         assertTrue(partitionResult.getUndeterminedTupleDomain().isAll());
 
         List<ConnectorPartition> partitions = partitionResult.getPartitions();
-        TupleDomain<ConnectorColumnHandle> columnUnionedTupleDomain = TupleDomain.columnWiseUnion(partitions.get(0).getTupleDomain(), partitions.get(1).getTupleDomain());
-        assertEquals(columnUnionedTupleDomain, TupleDomain.withColumnDomains(ImmutableMap.of(dsColumnHandle, Domain.create(SortedRangeSet.of(Range.equal(utf8Slice("1")), Range.equal(utf8Slice("2"))), false))));
+        ConnectorPartition partition = Iterables.getOnlyElement(partitions);
+        TupleDomain<ConnectorColumnHandle> columnUnionedTupleDomain = TupleDomain.columnWiseUnion(partition.getTupleDomain(), partition.getTupleDomain());
+        assertEquals(columnUnionedTupleDomain, TupleDomain.all());
 
         ConnectorSplitSource splitSource = raptorSplitManager.getPartitionSplits(tableHandle, partitions);
         int splitCount = 0;

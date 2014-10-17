@@ -16,10 +16,7 @@ package com.facebook.presto.operator.scalar;
 import com.facebook.presto.metadata.OperatorType;
 import com.facebook.presto.operator.Description;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.StandardErrorCode;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.BooleanType;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.type.RegexpType;
 import com.facebook.presto.type.SqlType;
 import com.google.common.primitives.Ints;
@@ -32,6 +29,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 public final class RegexpFunctions
@@ -42,36 +40,36 @@ public final class RegexpFunctions
 
     @ScalarOperator(OperatorType.CAST)
     @SqlType(RegexpType.NAME)
-    public static Pattern castToRegexp(@SqlType(VarcharType.NAME) Slice pattern)
+    public static Pattern castToRegexp(@SqlType(StandardTypes.VARCHAR) Slice pattern)
     {
         try {
             return Pattern.compile(pattern.toString(UTF_8));
         }
         catch (PatternSyntaxException e) {
-            throw new PrestoException(StandardErrorCode.INVALID_FUNCTION_ARGUMENT.toErrorCode(), e);
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, e);
         }
     }
 
     @Description("returns substrings matching a regular expression")
     @ScalarFunction
-    @SqlType(BooleanType.NAME)
-    public static boolean regexpLike(@SqlType(VarcharType.NAME) Slice source, @SqlType(RegexpType.NAME) Pattern pattern)
+    @SqlType(StandardTypes.BOOLEAN)
+    public static boolean regexpLike(@SqlType(StandardTypes.VARCHAR) Slice source, @SqlType(RegexpType.NAME) Pattern pattern)
     {
         return pattern.matcher(source.toString(UTF_8)).find();
     }
 
     @Description("removes substrings matching a regular expression")
     @ScalarFunction
-    @SqlType(VarcharType.NAME)
-    public static Slice regexpReplace(@SqlType(VarcharType.NAME) Slice source, @SqlType(RegexpType.NAME) Pattern pattern)
+    @SqlType(StandardTypes.VARCHAR)
+    public static Slice regexpReplace(@SqlType(StandardTypes.VARCHAR) Slice source, @SqlType(RegexpType.NAME) Pattern pattern)
     {
         return regexpReplace(source, pattern, Slices.EMPTY_SLICE);
     }
 
     @Description("replaces substrings matching a regular expression by given string")
     @ScalarFunction
-    @SqlType(VarcharType.NAME)
-    public static Slice regexpReplace(@SqlType(VarcharType.NAME) Slice source, @SqlType(RegexpType.NAME) Pattern pattern, @SqlType(VarcharType.NAME) Slice replacement)
+    @SqlType(StandardTypes.VARCHAR)
+    public static Slice regexpReplace(@SqlType(StandardTypes.VARCHAR) Slice source, @SqlType(RegexpType.NAME) Pattern pattern, @SqlType(StandardTypes.VARCHAR) Slice replacement)
     {
         Matcher matcher = pattern.matcher(source.toString(UTF_8));
         String replaced = matcher.replaceAll(replacement.toString(UTF_8));
@@ -81,8 +79,8 @@ public final class RegexpFunctions
     @Nullable
     @Description("string extracted using the given pattern")
     @ScalarFunction
-    @SqlType(VarcharType.NAME)
-    public static Slice regexpExtract(@SqlType(VarcharType.NAME) Slice source, @SqlType(RegexpType.NAME) Pattern pattern)
+    @SqlType(StandardTypes.VARCHAR)
+    public static Slice regexpExtract(@SqlType(StandardTypes.VARCHAR) Slice source, @SqlType(RegexpType.NAME) Pattern pattern)
     {
         return regexpExtract(source, pattern, 0);
     }
@@ -90,8 +88,8 @@ public final class RegexpFunctions
     @Nullable
     @Description("returns regex group of extracted string with a pattern")
     @ScalarFunction
-    @SqlType(VarcharType.NAME)
-    public static Slice regexpExtract(@SqlType(VarcharType.NAME) Slice source, @SqlType(RegexpType.NAME) Pattern pattern, @SqlType(BigintType.NAME) long group)
+    @SqlType(StandardTypes.VARCHAR)
+    public static Slice regexpExtract(@SqlType(StandardTypes.VARCHAR) Slice source, @SqlType(RegexpType.NAME) Pattern pattern, @SqlType(StandardTypes.BIGINT) long group)
     {
         Matcher matcher = pattern.matcher(source.toString(UTF_8));
         if ((group < 0) || (group > matcher.groupCount())) {

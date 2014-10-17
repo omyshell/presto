@@ -45,6 +45,7 @@ public class TestHiveClientConfig
                 .setMaxSplitIteratorThreads(50)
                 .setAllowDropTable(false)
                 .setAllowRenameTable(false)
+                .setAllowCorruptWritesForTesting(false)
                 .setMetastoreCacheTtl(new Duration(1, TimeUnit.HOURS))
                 .setMetastoreRefreshInterval(new Duration(2, TimeUnit.MINUTES))
                 .setMaxMetastoreRefreshThreads(100)
@@ -54,6 +55,7 @@ public class TestHiveClientConfig
                 .setMaxPartitionBatchSize(100)
                 .setMaxInitialSplits(200)
                 .setMaxInitialSplitSize(new DataSize(32, Unit.MEGABYTE))
+                .setForceLocalScheduling(false)
                 .setDfsTimeout(new Duration(10, TimeUnit.SECONDS))
                 .setDfsConnectTimeout(new Duration(500, TimeUnit.MILLISECONDS))
                 .setDfsConnectMaxRetries(5)
@@ -72,7 +74,8 @@ public class TestHiveClientConfig
                 .setS3MultipartMinFileSize(new DataSize(16, Unit.MEGABYTE))
                 .setS3MultipartMinPartSize(new DataSize(5, Unit.MEGABYTE))
                 .setS3MaxConnections(500)
-                .setS3StagingDirectory(new File(StandardSystemProperty.JAVA_IO_TMPDIR.value())));
+                .setS3StagingDirectory(new File(StandardSystemProperty.JAVA_IO_TMPDIR.value()))
+                .setOptimizedReaderEnabled(false));
     }
 
     @Test
@@ -86,6 +89,7 @@ public class TestHiveClientConfig
                 .put("hive.max-split-iterator-threads", "2")
                 .put("hive.allow-drop-table", "true")
                 .put("hive.allow-rename-table", "true")
+                .put("hive.allow-corrupt-writes-for-testing", "true")
                 .put("hive.metastore-cache-ttl", "2h")
                 .put("hive.metastore-refresh-interval", "30m")
                 .put("hive.metastore-refresh-max-threads", "2500")
@@ -101,6 +105,7 @@ public class TestHiveClientConfig
                 .put("hive.max-initial-splits", "10")
                 .put("hive.max-initial-split-size", "16MB")
                 .put("hive.storage-format", "SEQUENCEFILE")
+                .put("hive.force-local-scheduling", "true")
                 .put("dfs.domain-socket-path", "/foo")
                 .put("hive.s3.aws-access-key", "abc123")
                 .put("hive.s3.aws-secret-key", "secret")
@@ -114,6 +119,7 @@ public class TestHiveClientConfig
                 .put("hive.s3.multipart.min-part-size", "15MB")
                 .put("hive.s3.max-connections", "77")
                 .put("hive.s3.staging-directory", "/s3-staging")
+                .put("hive.optimized-reader.enabled", "true")
                 .build();
 
         HiveClientConfig expected = new HiveClientConfig()
@@ -124,6 +130,7 @@ public class TestHiveClientConfig
                 .setMaxSplitIteratorThreads(2)
                 .setAllowDropTable(true)
                 .setAllowRenameTable(true)
+                .setAllowCorruptWritesForTesting(true)
                 .setMetastoreCacheTtl(new Duration(2, TimeUnit.HOURS))
                 .setMetastoreRefreshInterval(new Duration(30, TimeUnit.MINUTES))
                 .setMaxMetastoreRefreshThreads(2500)
@@ -133,6 +140,7 @@ public class TestHiveClientConfig
                 .setMaxPartitionBatchSize(1000)
                 .setMaxInitialSplits(10)
                 .setMaxInitialSplitSize(new DataSize(16, Unit.MEGABYTE))
+                .setForceLocalScheduling(true)
                 .setDfsTimeout(new Duration(33, TimeUnit.SECONDS))
                 .setDfsConnectTimeout(new Duration(20, TimeUnit.SECONDS))
                 .setDfsConnectMaxRetries(10)
@@ -151,7 +159,8 @@ public class TestHiveClientConfig
                 .setS3MultipartMinFileSize(new DataSize(32, Unit.MEGABYTE))
                 .setS3MultipartMinPartSize(new DataSize(15, Unit.MEGABYTE))
                 .setS3MaxConnections(77)
-                .setS3StagingDirectory(new File("/s3-staging"));
+                .setS3StagingDirectory(new File("/s3-staging"))
+                .setOptimizedReaderEnabled(true);
 
         ConfigAssertions.assertFullMapping(properties, expected);
     }

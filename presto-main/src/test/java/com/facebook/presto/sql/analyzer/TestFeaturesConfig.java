@@ -30,7 +30,9 @@ public class TestFeaturesConfig
     {
         assertRecordedDefaults(ConfigAssertions.recordDefaults(FeaturesConfig.class)
                 .setExperimentalSyntaxEnabled(false)
-                .setDistributedIndexJoinsEnabled(false));
+                .setDistributedIndexJoinsEnabled(false)
+                .setDistributedJoinsEnabled(false)
+                .setOptimizeMetadataQueries(false));
     }
 
     @Test
@@ -39,15 +41,21 @@ public class TestFeaturesConfig
         Map<String, String> propertiesLegacy = new ImmutableMap.Builder<String, String>()
                 .put("analyzer.experimental-syntax-enabled", "true")
                 .put("distributed-index-joins-enabled", "true")
+                .put("distributed-joins-enabled", "true")
+                .put("optimizer.optimize-metadata-queries", "true")
                 .build();
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("experimental-syntax-enabled", "true")
                 .put("distributed-index-joins-enabled", "true")
+                .put("distributed-joins-enabled", "true")
+                .put("optimizer.optimize-metadata-queries", "true")
                 .build();
 
         FeaturesConfig expected = new FeaturesConfig()
                 .setExperimentalSyntaxEnabled(true)
-                .setDistributedIndexJoinsEnabled(true);
+                .setDistributedIndexJoinsEnabled(true)
+                .setDistributedJoinsEnabled(true)
+                .setOptimizeMetadataQueries(true);
 
         assertFullMapping(properties, expected);
         assertDeprecatedEquivalence(FeaturesConfig.class, properties, propertiesLegacy);

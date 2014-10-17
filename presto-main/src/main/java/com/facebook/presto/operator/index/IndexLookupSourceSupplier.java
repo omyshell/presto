@@ -13,17 +13,16 @@
  */
 package com.facebook.presto.operator.index;
 
-import com.facebook.presto.operator.DriverFactory;
 import com.facebook.presto.operator.LookupSource;
 import com.facebook.presto.operator.LookupSourceSupplier;
 import com.facebook.presto.operator.OperatorContext;
-import com.facebook.presto.operator.index.PagesIndexBuilderOperator.PagesIndexBuilderOperatorFactory;
 import com.facebook.presto.spi.type.Type;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
 
 import java.util.List;
+import java.util.Set;
 
 public class IndexLookupSourceSupplier
         implements LookupSourceSupplier
@@ -31,14 +30,14 @@ public class IndexLookupSourceSupplier
     private final IndexLoader indexLoader;
 
     public IndexLookupSourceSupplier(
-            List<Integer> indexChannels,
-            List<Type> types,
-            DriverFactory indexBuildDriverFactory,
-            PagesIndexBuilderOperatorFactory pagesIndexOutput,
+            Set<Integer> lookupSourceInputChannels,
+            List<Integer> keyOutputChannels,
+            List<Type> outputTypes,
+            IndexBuildDriverFactoryProvider indexBuildDriverFactoryProvider,
             DataSize maxIndexMemorySize,
             IndexJoinLookupStats stats)
     {
-        this.indexLoader = new IndexLoader(indexChannels, types, indexBuildDriverFactory, pagesIndexOutput, 100_000, maxIndexMemorySize, stats);
+        this.indexLoader = new IndexLoader(lookupSourceInputChannels, keyOutputChannels, outputTypes, indexBuildDriverFactoryProvider, 100_000, maxIndexMemorySize, stats);
     }
 
     @Override

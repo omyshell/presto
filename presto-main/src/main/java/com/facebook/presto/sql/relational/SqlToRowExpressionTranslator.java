@@ -13,13 +13,15 @@
  */
 package com.facebook.presto.sql.relational;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.type.TimeZoneKey;
 import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.type.TypeSignature;
 import com.facebook.presto.sql.relational.optimizer.ExpressionOptimizer;
 import com.facebook.presto.sql.tree.ArithmeticExpression;
+import com.facebook.presto.sql.tree.ArrayConstructor;
 import com.facebook.presto.sql.tree.AstVisitor;
 import com.facebook.presto.sql.tree.BetweenPredicate;
 import com.facebook.presto.sql.tree.BooleanLiteral;
@@ -47,11 +49,13 @@ import com.facebook.presto.sql.tree.NullLiteral;
 import com.facebook.presto.sql.tree.SearchedCaseExpression;
 import com.facebook.presto.sql.tree.SimpleCaseExpression;
 import com.facebook.presto.sql.tree.StringLiteral;
+import com.facebook.presto.sql.tree.SubscriptExpression;
 import com.facebook.presto.sql.tree.TimeLiteral;
 import com.facebook.presto.sql.tree.TimestampLiteral;
 import com.facebook.presto.sql.tree.WhenClause;
 import com.facebook.presto.type.UnknownType;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import io.airlift.slice.Slices;
@@ -65,6 +69,7 @@ import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 import static com.facebook.presto.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
 import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.relational.Expressions.call;
 import static com.facebook.presto.sql.relational.Expressions.constant;
@@ -73,6 +78,7 @@ import static com.facebook.presto.sql.relational.Expressions.field;
 import static com.facebook.presto.sql.relational.RowExpression.typeGetter;
 import static com.facebook.presto.sql.relational.Signatures.arithmeticExpressionSignature;
 import static com.facebook.presto.sql.relational.Signatures.arithmeticNegationSignature;
+import static com.facebook.presto.sql.relational.Signatures.arrayConstructorSignature;
 import static com.facebook.presto.sql.relational.Signatures.betweenSignature;
 import static com.facebook.presto.sql.relational.Signatures.castSignature;
 import static com.facebook.presto.sql.relational.Signatures.coalesceSignature;
@@ -81,11 +87,12 @@ import static com.facebook.presto.sql.relational.Signatures.likePatternSignature
 import static com.facebook.presto.sql.relational.Signatures.likeSignature;
 import static com.facebook.presto.sql.relational.Signatures.logicalExpressionSignature;
 import static com.facebook.presto.sql.relational.Signatures.nullIfSignature;
+import static com.facebook.presto.sql.relational.Signatures.subscriptSignature;
 import static com.facebook.presto.sql.relational.Signatures.switchSignature;
 import static com.facebook.presto.sql.relational.Signatures.tryCastSignature;
 import static com.facebook.presto.sql.relational.Signatures.whenSignature;
 import static com.facebook.presto.type.LikePatternType.LIKE_PATTERN;
-import static com.facebook.presto.type.TypeUtils.nameGetter;
+import static com.facebook.presto.type.TypeUtils.typeSignatureGetter;
 import static com.facebook.presto.util.DateTimeUtils.parseDayTimeInterval;
 import static com.facebook.presto.util.DateTimeUtils.parseTimeWithTimeZone;
 import static com.facebook.presto.util.DateTimeUtils.parseTimeWithoutTimeZone;
@@ -99,7 +106,7 @@ public final class SqlToRowExpressionTranslator
     {
     }
 
-    public static RowExpression translate(Expression expression, IdentityHashMap<Expression, Type> types, Metadata metadata, ConnectorSession session, boolean optimize)
+    public static RowExpression translate(Expression expression, IdentityHashMap<Expression, Type> types, Metadata metadata, Session session, boolean optimize)
     {
         RowExpression result = new Visitor(types, metadata, session.getTimeZoneKey()).process(expression, null);
 
@@ -113,7 +120,7 @@ public final class SqlToRowExpressionTranslator
         return result;
     }
 
-    public static List<RowExpression> translate(List<Expression> expressions, IdentityHashMap<Expression, Type> types, Metadata metadata, ConnectorSession session, boolean optimize)
+    public static List<RowExpression> translate(List<Expression> expressions, IdentityHashMap<Expression, Type> types, Metadata metadata, Session session, boolean optimize)
     {
         ImmutableList.Builder<RowExpression> builder = ImmutableList.builder();
         for (Expression expression : expressions) {
@@ -181,7 +188,7 @@ public final class SqlToRowExpressionTranslator
         @Override
         protected RowExpression visitGenericLiteral(GenericLiteral node, Void context)
         {
-            Type type = metadata.getType(node.getType());
+            Type type = metadata.getType(parseTypeSignature(node.getType()));
             if (type == null) {
                 throw new IllegalArgumentException("Unsupported type: " + node.getType());
             }
@@ -249,10 +256,15 @@ public final class SqlToRowExpressionTranslator
         @Override
         protected RowExpression visitFunctionCall(FunctionCall node, Void context)
         {
-            List<RowExpression> arguments = Lists.transform(node.getArguments(), processFunction(context));
+            List<RowExpression> arguments = FluentIterable.from(node.getArguments())
+                    .transform(processFunction(context))
+                    .toList();
 
-            List<String> argumentTypes = Lists.transform(Lists.transform(arguments, typeGetter()), nameGetter());
-            Signature signature = new Signature(node.getName().getSuffix(), types.get(node).getName(), argumentTypes);
+            List<TypeSignature> argumentTypes = FluentIterable.from(arguments)
+                    .transform(typeGetter())
+                    .transform(typeSignatureGetter())
+                    .toList();
+            Signature signature = new Signature(node.getName().getSuffix(), types.get(node).getTypeSignature(), argumentTypes);
 
             return call(signature, types.get(node), arguments);
         }
@@ -306,9 +318,11 @@ public final class SqlToRowExpressionTranslator
         @Override
         protected RowExpression visitCoalesceExpression(CoalesceExpression node, Void context)
         {
-            List<RowExpression> arguments = Lists.transform(node.getOperands(), processFunction(context));
+            List<RowExpression> arguments = FluentIterable.from(node.getOperands())
+                    .transform(processFunction(context))
+                    .toList();
 
-            List<Type> argumentTypes = Lists.transform(arguments, typeGetter());
+            List<Type> argumentTypes = FluentIterable.from(arguments).transform(typeGetter()).toList();
             return call(coalesceSignature(types.get(node), argumentTypes), types.get(node), arguments);
         }
 
@@ -474,6 +488,31 @@ public final class SqlToRowExpressionTranslator
             }
 
             return call(likeSignature(), BOOLEAN, value, call(castSignature(LIKE_PATTERN, VARCHAR), LIKE_PATTERN, pattern));
+        }
+
+        @Override
+        protected RowExpression visitSubscriptExpression(SubscriptExpression node, Void context)
+        {
+            RowExpression base = process(node.getBase(), context);
+            RowExpression index = process(node.getIndex(), context);
+
+            return call(
+                    subscriptSignature(types.get(node), base.getType(), index.getType()),
+                    types.get(node),
+                    base,
+                    index);
+        }
+
+        @Override
+        protected RowExpression visitArrayConstructor(ArrayConstructor node, Void context)
+        {
+            List<RowExpression> arguments = FluentIterable.from(node.getValues())
+                    .transform(processFunction(context))
+                    .toList();
+            List<Type> argumentTypes = FluentIterable.from(arguments)
+                    .transform(typeGetter())
+                    .toList();
+            return call(arrayConstructorSignature(types.get(node), argumentTypes), types.get(node), arguments);
         }
     }
 }

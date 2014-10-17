@@ -16,7 +16,7 @@ package com.facebook.presto.execution;
 import com.facebook.presto.OutputBuffers;
 import com.facebook.presto.PagePartitionFunction;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
-import com.facebook.presto.operator.Page;
+import com.facebook.presto.spi.Page;
 import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
@@ -122,14 +122,14 @@ public class SharedBuffer
     @GuardedBy("this")
     private final AtomicLong masterSequenceId = new AtomicLong();
     @GuardedBy("this")
-    private final ConcurrentMap<String, NamedBuffer> namedBuffers = new ConcurrentHashMap<>();
+    private final ConcurrentMap<TaskId, NamedBuffer> namedBuffers = new ConcurrentHashMap<>();
     @GuardedBy("this")
-    private Set<String> abortedBuffers = new HashSet<>();
+    private final Set<TaskId> abortedBuffers = new HashSet<>();
 
     private final StateMachine<BufferState> state;
 
     @GuardedBy("this")
-    private List<GetBufferResult> stateChangeListeners = new ArrayList<>();
+    private final List<GetBufferResult> stateChangeListeners = new ArrayList<>();
 
     private final AtomicLong pagesAdded = new AtomicLong();
 
@@ -178,14 +178,14 @@ public class SharedBuffer
         }
 
         // verify this is valid state change
-        SetView<String> missingBuffers = Sets.difference(outputBuffers.getBuffers().keySet(), newOutputBuffers.getBuffers().keySet());
+        SetView<TaskId> missingBuffers = Sets.difference(outputBuffers.getBuffers().keySet(), newOutputBuffers.getBuffers().keySet());
         checkArgument(missingBuffers.isEmpty(), "newOutputBuffers does not have existing buffers %s", missingBuffers);
         checkArgument(!outputBuffers.isNoMoreBufferIds() || newOutputBuffers.isNoMoreBufferIds(), "Expected newOutputBuffers to have noMoreBufferIds set");
         outputBuffers = newOutputBuffers;
 
         // add the new buffers
-        for (Entry<String, PagePartitionFunction> entry : outputBuffers.getBuffers().entrySet()) {
-            String bufferId = entry.getKey();
+        for (Entry<TaskId, PagePartitionFunction> entry : outputBuffers.getBuffers().entrySet()) {
+            TaskId bufferId = entry.getKey();
             if (!namedBuffers.containsKey(bufferId)) {
                 checkState(state.get().canAddBuffers(), "Cannot add buffers to %s", SharedBuffer.class.getSimpleName());
                 NamedBuffer namedBuffer = new NamedBuffer(bufferId, entry.getValue());
@@ -233,12 +233,12 @@ public class SharedBuffer
         // add page
         masterBuffer.add(page);
         pagesAdded.incrementAndGet();
-        bufferedBytes += page.getDataSize().toBytes();
+        bufferedBytes += page.getSizeInBytes();
 
         processPendingReads();
     }
 
-    public synchronized ListenableFuture<BufferResult> get(String outputId, long startingSequenceId, DataSize maxSize)
+    public synchronized ListenableFuture<BufferResult> get(TaskId outputId, long startingSequenceId, DataSize maxSize)
     {
         checkNotNull(outputId, "outputId is null");
         checkArgument(maxSize.toBytes() > 0, "maxSize must be at least 1 byte");
@@ -265,7 +265,7 @@ public class SharedBuffer
         int listOffset = Ints.checkedCast(sequenceId - masterSequenceId.get());
         while (listOffset < masterBuffer.size()) {
             Page page = masterBuffer.get(listOffset++);
-            bytes += page.getDataSize().toBytes();
+            bytes += page.getSizeInBytes();
             // break (and don't add) if this page would exceed the limit
             if (!pages.isEmpty() && bytes > maxBytes) {
                 break;
@@ -275,7 +275,7 @@ public class SharedBuffer
         return ImmutableList.copyOf(pages);
     }
 
-    public synchronized void abort(String outputId)
+    public synchronized void abort(TaskId outputId)
     {
         checkNotNull(outputId, "outputId is null");
 
@@ -372,7 +372,7 @@ public class SharedBuffer
 
                 for (int i = 0; i < pagesToRemove; i++) {
                     Page page = masterBuffer.removeFirst();
-                    bufferedBytes -= page.getDataSize().toBytes();
+                    bufferedBytes -= page.getSizeInBytes();
                 }
 
                 // refill buffer from queued pages
@@ -409,13 +409,13 @@ public class SharedBuffer
     @ThreadSafe
     private final class NamedBuffer
     {
-        private final String bufferId;
+        private final TaskId bufferId;
         private final PagePartitionFunction partitionFunction;
 
         private final AtomicLong sequenceId = new AtomicLong();
         private final AtomicBoolean finished = new AtomicBoolean();
 
-        private NamedBuffer(String bufferId, PagePartitionFunction partitionFunction)
+        private NamedBuffer(TaskId bufferId, PagePartitionFunction partitionFunction)
         {
             this.bufferId = bufferId;
             this.partitionFunction = partitionFunction;
@@ -529,11 +529,11 @@ public class SharedBuffer
     {
         private final SettableFuture<BufferResult> future = SettableFuture.create();
 
-        private final String outputId;
+        private final TaskId outputId;
         private final long startingSequenceId;
         private final DataSize maxSize;
 
-        public GetBufferResult(String outputId, long startingSequenceId, DataSize maxSize)
+        public GetBufferResult(TaskId outputId, long startingSequenceId, DataSize maxSize)
         {
             this.outputId = outputId;
             this.startingSequenceId = startingSequenceId;

@@ -13,13 +13,14 @@
  */
 package com.facebook.presto.sql.analyzer;
 
+import com.facebook.presto.Session;
+import com.facebook.presto.connector.system.SystemTablesMetadata;
 import com.facebook.presto.metadata.MetadataManager;
 import com.facebook.presto.metadata.QualifiedTableName;
 import com.facebook.presto.metadata.TableMetadata;
 import com.facebook.presto.metadata.TestingMetadata;
 import com.facebook.presto.metadata.ViewDefinition;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.sql.parser.SqlParser;
@@ -31,8 +32,6 @@ import io.airlift.json.JsonCodec;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
-
-import java.util.Locale;
 
 import static com.facebook.presto.metadata.ViewDefinition.ViewColumn;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
@@ -61,12 +60,21 @@ import static com.facebook.presto.sql.analyzer.SemanticErrorCode.TYPE_MISMATCH;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.VIEW_IS_STALE;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.WILDCARD_WITHOUT_FROM;
 import static java.lang.String.format;
+import static java.util.Locale.ENGLISH;
 import static org.testng.Assert.fail;
 
 @Test(singleThreaded = true)
 public class TestAnalyzer
 {
-    private static final ConnectorSession SESSION = new ConnectorSession("user", "test", "default", "default", UTC_KEY, Locale.ENGLISH, null, null);
+    public static final Session SESSION = Session.builder()
+            .setUser("user")
+            .setSource("test")
+            .setCatalog("default")
+            .setSchema("default")
+            .setTimeZoneKey(UTC_KEY)
+            .setLocale(ENGLISH)
+            .build();
+
     private static final SqlParser SQL_PARSER = new SqlParser();
 
     private Analyzer analyzer;
@@ -78,6 +86,13 @@ public class TestAnalyzer
     {
         assertFails(DUPLICATE_RELATION, "SELECT * FROM t1 JOIN t1 USING (a)");
         assertFails(DUPLICATE_RELATION, "SELECT * FROM t1 x JOIN t2 x USING (a)");
+    }
+
+    @Test
+    public void testNonComparableGroupBy()
+            throws Exception
+    {
+        assertFails(TYPE_MISMATCH, "SELECT * FROM (SELECT ARRAY[1,2]) GROUP BY 1");
     }
 
     @Test
@@ -304,9 +319,10 @@ public class TestAnalyzer
     }
 
     @Test
-    public void testImplicitCrossJoinNotSupported()
+    public void testImplicitCrossJoin()
     {
-        assertFails(NOT_SUPPORTED, "SELECT * FROM a, b");
+        // TODO: validate output
+        analyze("SELECT * FROM t1, t2");
     }
 
     @Test
@@ -617,7 +633,7 @@ public class TestAnalyzer
     public void setup()
             throws Exception
     {
-        MetadataManager metadata = new MetadataManager(new FeaturesConfig().setExperimentalSyntaxEnabled(true), new TypeRegistry());
+        MetadataManager metadata = new MetadataManager(new FeaturesConfig().setExperimentalSyntaxEnabled(true), new TypeRegistry(), new SystemTablesMetadata());
         metadata.addConnectorMetadata("tpch", "tpch", new TestingMetadata());
         metadata.addConnectorMetadata("c2", "c2", new TestingMetadata());
         metadata.addConnectorMetadata("c3", "c3", new TestingMetadata());
@@ -667,14 +683,28 @@ public class TestAnalyzer
         metadata.createView(SESSION, new QualifiedTableName("c3", "s3", "v3"), viewData3, false);
 
         analyzer = new Analyzer(
-                new ConnectorSession("user", "test", "tpch", "default", UTC_KEY, Locale.ENGLISH, null, null),
+                Session.builder()
+                        .setUser("user")
+                        .setSource("test")
+                        .setCatalog("tpch")
+                        .setSchema("default")
+                        .setTimeZoneKey(UTC_KEY)
+                        .setLocale(ENGLISH)
+                        .build(),
                 metadata,
                 SQL_PARSER,
                 Optional.<QueryExplainer>absent(),
                 true);
 
         approximateDisabledAnalyzer = new Analyzer(
-                new ConnectorSession("user", "test", "tpch", "default", UTC_KEY, Locale.ENGLISH, null, null),
+                Session.builder()
+                        .setUser("user")
+                        .setSource("test")
+                        .setCatalog("tpch")
+                        .setSchema("default")
+                        .setTimeZoneKey(UTC_KEY)
+                        .setLocale(ENGLISH)
+                        .build(),
                 metadata,
                 SQL_PARSER,
                 Optional.<QueryExplainer>absent(),

@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.metadata;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.type.Type;
@@ -29,6 +29,7 @@ import java.util.List;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Locale.ENGLISH;
 
 public final class MetadataUtil
 {
@@ -91,7 +92,7 @@ public final class MetadataUtil
     public static String checkLowerCase(String value, String name)
     {
         checkNotNull(value, "%s is null", name);
-        checkArgument(value.equals(value.toLowerCase()), "%s is not lowercase", name);
+        checkArgument(value.equals(value.toLowerCase(ENGLISH)), "%s is not lowercase", name);
         return value;
     }
 
@@ -129,7 +130,7 @@ public final class MetadataUtil
         };
     }
 
-    public static QualifiedTableName createQualifiedTableName(ConnectorSession session, QualifiedName name)
+    public static QualifiedTableName createQualifiedTableName(Session session, QualifiedName name)
     {
         checkNotNull(session, "session is null");
         checkNotNull(name, "name is null");

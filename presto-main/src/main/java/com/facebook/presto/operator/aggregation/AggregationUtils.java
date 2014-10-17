@@ -15,9 +15,13 @@ package com.facebook.presto.operator.aggregation;
 
 import com.facebook.presto.operator.aggregation.state.AccumulatorStateSerializer;
 import com.facebook.presto.operator.aggregation.state.VarianceState;
+import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.spi.type.TypeSignature;
 import com.google.common.base.CaseFormat;
+import com.google.common.base.Function;
 
 import javax.annotation.Nullable;
 
@@ -25,6 +29,7 @@ import java.lang.reflect.Method;
 import java.util.List;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.Locale.ENGLISH;
 
 public final class AggregationUtils
 {
@@ -65,19 +70,33 @@ public final class AggregationUtils
             return serializer.getSerializedType();
         }
         else {
-            return typeManager.getType(outputFunction.getAnnotation(OutputFunction.class).value());
+            return typeManager.getType(TypeSignature.parseTypeSignature(outputFunction.getAnnotation(OutputFunction.class).value()));
         }
     }
 
     public static String generateAggregationName(String baseName, Type outputType, List<Type> inputTypes)
     {
         StringBuilder sb = new StringBuilder();
-        sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, outputType.getName()));
+        sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, outputType.getTypeSignature().toString()));
         for (Type inputType : inputTypes) {
-            sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, inputType.getName()));
+            sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, inputType.getTypeSignature().toString()));
         }
-        sb.append(CaseFormat.LOWER_UNDERSCORE.to(CaseFormat.UPPER_CAMEL, baseName.toLowerCase()));
+        sb.append(CaseFormat.LOWER_UNDERSCORE.to(CaseFormat.UPPER_CAMEL, baseName.toLowerCase(ENGLISH)));
 
         return sb.toString();
+    }
+
+    // used by aggregation compiler
+    @SuppressWarnings("UnusedDeclaration")
+    public static Function<Integer, Block> pageBlockGetter(final Page page)
+    {
+        return new Function<Integer, Block>()
+        {
+            @Override
+            public Block apply(Integer input)
+            {
+                return page.getBlock(input);
+            }
+        };
     }
 }

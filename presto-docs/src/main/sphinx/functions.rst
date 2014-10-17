@@ -19,3 +19,5 @@ Functions and Operators
     functions/aggregate
     functions/window
     functions/color
+    functions/array
+    functions/map

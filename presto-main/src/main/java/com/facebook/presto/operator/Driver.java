@@ -16,6 +16,7 @@ package com.facebook.presto.operator;
 import com.facebook.presto.ScheduledSplit;
 import com.facebook.presto.TaskSource;
 import com.facebook.presto.metadata.Split;
+import com.facebook.presto.spi.Page;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
@@ -291,54 +292,58 @@ public class Driver
                     return NOT_BLOCKED;
                 }
 
-                driverContext.start();
-
-                if (!newSources.isEmpty()) {
-                    processNewSources();
-                }
-
-                for (int i = 0; i < operators.size() - 1 && !driverContext.isDone(); i++) {
-                    // check if current operator is blocked
-                    Operator current = operators.get(i);
-                    ListenableFuture<?> blocked = current.isBlocked();
-                    if (!blocked.isDone()) {
-                        current.getOperatorContext().recordBlocked(blocked);
-                        return blocked;
+                driverContext.startProcessTimer();
+                try {
+                    if (!newSources.isEmpty()) {
+                        processNewSources();
                     }
 
-                    // check if next operator is blocked
-                    Operator next = operators.get(i + 1);
-                    blocked = next.isBlocked();
-                    if (!blocked.isDone()) {
-                        next.getOperatorContext().recordBlocked(blocked);
-                        return blocked;
-                    }
+                    for (int i = 0; i < operators.size() - 1 && !driverContext.isDone(); i++) {
+                        // check if current operator is blocked
+                        Operator current = operators.get(i);
+                        ListenableFuture<?> blocked = current.isBlocked();
+                        if (!blocked.isDone()) {
+                            current.getOperatorContext().recordBlocked(blocked);
+                            return blocked;
+                        }
 
-                    // if current operator is finished...
-                    if (current.isFinished()) {
-                        // let next operator know there will be no more data
-                        next.getOperatorContext().startIntervalTimer();
-                        next.finish();
-                        next.getOperatorContext().recordFinish();
-                    }
-                    else {
-                        // if next operator needs input...
-                        if (next.needsInput()) {
-                            // get an output page from current operator
-                            current.getOperatorContext().startIntervalTimer();
-                            Page page = current.getOutput();
-                            current.getOperatorContext().recordGetOutput(page);
+                        // check if next operator is blocked
+                        Operator next = operators.get(i + 1);
+                        blocked = next.isBlocked();
+                        if (!blocked.isDone()) {
+                            next.getOperatorContext().recordBlocked(blocked);
+                            return blocked;
+                        }
 
-                            // if we got an output page, add it to the next operator
-                            if (page != null) {
-                                next.getOperatorContext().startIntervalTimer();
-                                next.addInput(page);
-                                next.getOperatorContext().recordAddInput(page);
+                        // if current operator is finished...
+                        if (current.isFinished()) {
+                            // let next operator know there will be no more data
+                            next.getOperatorContext().startIntervalTimer();
+                            next.finish();
+                            next.getOperatorContext().recordFinish();
+                        }
+                        else {
+                            // if next operator needs input...
+                            if (next.needsInput()) {
+                                // get an output page from current operator
+                                current.getOperatorContext().startIntervalTimer();
+                                Page page = current.getOutput();
+                                current.getOperatorContext().recordGetOutput(page);
+
+                                // if we got an output page, add it to the next operator
+                                if (page != null) {
+                                    next.getOperatorContext().startIntervalTimer();
+                                    next.addInput(page);
+                                    next.getOperatorContext().recordAddInput(page);
+                                }
                             }
                         }
                     }
+                    return NOT_BLOCKED;
                 }
-                return NOT_BLOCKED;
+                finally {
+                    driverContext.recordProcessed();
+                }
             }
             catch (Throwable t) {
                 driverContext.failed(t);
@@ -423,7 +428,10 @@ public class Driver
                 inFlightException = newException;
             }
             else {
-                inFlightException.addSuppressed(newException);
+                // Self-suppression not permitted
+                if (inFlightException != newException) {
+                    inFlightException.addSuppressed(newException);
+                }
             }
         }
         else {
@@ -457,6 +465,11 @@ public class Driver
 
         private DriverLockResult(int timeout, TimeUnit unit)
         {
+            acquired = tryAcquire(timeout, unit);
+        }
+
+        private boolean tryAcquire(int timeout, TimeUnit unit)
+        {
             boolean acquired = false;
             try {
                 acquired = exclusiveLock.tryLock(timeout, unit);
@@ -464,13 +477,14 @@ public class Driver
             catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            this.acquired = acquired;
 
             if (acquired) {
                 synchronized (Driver.this) {
                     lockHolder = Thread.currentThread();
                 }
             }
+
+            return acquired;
         }
 
         public boolean wasAcquired()
@@ -485,20 +499,30 @@ public class Driver
                 return;
             }
 
-            // before releasing the lock, process any new sources and/or destroy the driver
-            try {
+            boolean done = false;
+            while (!done) {
+                done = true;
+                // before releasing the lock, process any new sources and/or destroy the driver
                 try {
-                    processNewSources();
+                    try {
+                        processNewSources();
+                    }
+                    finally {
+                        destroyIfNecessary();
+                    }
                 }
                 finally {
-                    destroyIfNecessary();
+                    synchronized (Driver.this) {
+                        lockHolder = null;
+                    }
+                    exclusiveLock.unlock();
+
+                    // if new sources were added after we processed them, go around and try again
+                    // in case someone else failed to acquire the lock and as a result won't update them
+                    if (!newSources.isEmpty() && state.get() == State.ALIVE && tryAcquire(0, TimeUnit.MILLISECONDS)) {
+                        done = false;
+                    }
                 }
-            }
-            finally {
-                synchronized (Driver.this) {
-                    lockHolder = null;
-                }
-                exclusiveLock.unlock();
             }
         }
     }

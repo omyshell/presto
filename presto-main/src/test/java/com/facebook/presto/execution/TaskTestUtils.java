@@ -16,6 +16,7 @@ package com.facebook.presto.execution;
 import com.facebook.presto.OutputBuffers;
 import com.facebook.presto.ScheduledSplit;
 import com.facebook.presto.TaskSource;
+import com.facebook.presto.connector.system.SystemRecordSetProvider;
 import com.facebook.presto.execution.TestSqlTaskManager.MockExchangeClientSupplier;
 import com.facebook.presto.index.IndexManager;
 import com.facebook.presto.metadata.ColumnHandle;
@@ -24,10 +25,8 @@ import com.facebook.presto.metadata.Split;
 import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.operator.RecordSinkManager;
 import com.facebook.presto.operator.index.IndexJoinLookupStats;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.split.DataStreamManager;
-import com.facebook.presto.sql.analyzer.FeaturesConfig;
+import com.facebook.presto.split.PageSourceManager;
 import com.facebook.presto.sql.gen.ExpressionCompiler;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.CompilerConfig;
@@ -42,15 +41,13 @@ import com.facebook.presto.sql.planner.plan.PlanFragmentId;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.sql.planner.plan.TableScanNode;
 import com.facebook.presto.sql.planner.plan.TableScanNode.GeneratedPartitions;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 
 import java.util.List;
-import java.util.Locale;
 
-import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
+import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 
 public final class TaskTestUtils
@@ -58,8 +55,6 @@ public final class TaskTestUtils
     private TaskTestUtils()
     {
     }
-
-    public static final ConnectorSession SESSION = new ConnectorSession("user", "test", "default", "default", UTC_KEY, Locale.ENGLISH, "test", "test");
 
     public static final ScheduledSplit SPLIT = new ScheduledSplit(0, new Split("test", new TestingSplit()));
 
@@ -86,14 +81,14 @@ public final class TaskTestUtils
 
     public static LocalExecutionPlanner createTestingPlanner()
     {
-        MetadataManager metadata = new MetadataManager(new FeaturesConfig(), new TypeRegistry());
+        MetadataManager metadata = new MetadataManager();
 
-        DataStreamManager dataStreamProvider = new DataStreamManager();
-        dataStreamProvider.addConnectorDataStreamProvider("test", new TestingDataStreamProvider());
+        PageSourceManager pageSourceManager = new PageSourceManager(new SystemRecordSetProvider());
+        pageSourceManager.addConnectorPageSourceProvider("test", new TestingPageSourceProvider());
         return new LocalExecutionPlanner(
                 metadata,
                 new SqlParser(),
-                dataStreamProvider,
+                pageSourceManager,
                 new IndexManager(),
                 new RecordSinkManager(),
                 new MockExchangeClientSupplier(),
@@ -105,6 +100,6 @@ public final class TaskTestUtils
 
     public static TaskInfo updateTask(SqlTask sqlTask, List<TaskSource> taskSources, OutputBuffers outputBuffers)
     {
-        return sqlTask.updateTask(SESSION, PLAN_FRAGMENT, taskSources, outputBuffers);
+        return sqlTask.updateTask(TEST_SESSION, PLAN_FRAGMENT, taskSources, outputBuffers);
     }
 }

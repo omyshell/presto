@@ -47,8 +47,11 @@ public class HiveClientConfig
     private int maxPartitionBatchSize = 100;
     private int maxInitialSplits = 200;
     private DataSize maxInitialSplitSize;
+    private boolean forceLocalScheduling;
     private boolean allowDropTable;
     private boolean allowRenameTable;
+
+    private boolean allowCorruptWritesForTesting;
 
     private Duration metastoreCacheTtl = new Duration(1, TimeUnit.HOURS);
     private Duration metastoreRefreshInterval = new Duration(2, TimeUnit.MINUTES);
@@ -80,6 +83,8 @@ public class HiveClientConfig
 
     private List<String> resourceConfigFiles;
 
+    private boolean optimizedReaderEnabled;
+
     public int getMaxInitialSplits()
     {
         return maxInitialSplits;
@@ -104,6 +109,18 @@ public class HiveClientConfig
     public HiveClientConfig setMaxInitialSplitSize(DataSize maxInitialSplitSize)
     {
         this.maxInitialSplitSize = maxInitialSplitSize;
+        return this;
+    }
+
+    public boolean isForceLocalScheduling()
+    {
+        return forceLocalScheduling;
+    }
+
+    @Config("hive.force-local-scheduling")
+    public HiveClientConfig setForceLocalScheduling(boolean forceLocalScheduling)
+    {
+        this.forceLocalScheduling = forceLocalScheduling;
         return this;
     }
 
@@ -191,13 +208,28 @@ public class HiveClientConfig
         return this;
     }
 
+    @Deprecated
+    public boolean getAllowCorruptWritesForTesting()
+    {
+        return allowCorruptWritesForTesting;
+    }
+
+    @Deprecated
+    @Config("hive.allow-corrupt-writes-for-testing")
+    @ConfigDescription("Allow Hive connector to write data even when data will likely be corrupt")
+    public HiveClientConfig setAllowCorruptWritesForTesting(boolean allowCorruptWritesForTesting)
+    {
+        this.allowCorruptWritesForTesting = allowCorruptWritesForTesting;
+        return this;
+    }
+
     public boolean getAllowDropTable()
     {
         return this.allowDropTable;
     }
 
     @Config("hive.allow-drop-table")
-    @ConfigDescription("Allow hive connector to drop table")
+    @ConfigDescription("Allow Hive connector to drop table")
     public HiveClientConfig setAllowDropTable(boolean allowDropTable)
     {
         this.allowDropTable = allowDropTable;
@@ -547,6 +579,20 @@ public class HiveClientConfig
     public HiveClientConfig setS3MultipartMinPartSize(DataSize size)
     {
         this.s3MultipartMinPartSize = size;
+        return this;
+    }
+
+    @Deprecated
+    public boolean isOptimizedReaderEnabled()
+    {
+        return optimizedReaderEnabled;
+    }
+
+    @Deprecated
+    @Config("hive.optimized-reader.enabled")
+    public HiveClientConfig setOptimizedReaderEnabled(boolean optimizedReaderEnabled)
+    {
+        this.optimizedReaderEnabled = optimizedReaderEnabled;
         return this;
     }
 }

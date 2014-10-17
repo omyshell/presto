@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.sql.planner;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.block.SortOrder;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.analyzer.Analysis;
@@ -77,9 +77,9 @@ class QueryPlanner
     private final SymbolAllocator symbolAllocator;
     private final PlanNodeIdAllocator idAllocator;
     private final Metadata metadata;
-    private final ConnectorSession session;
+    private final Session session;
 
-    QueryPlanner(Analysis analysis, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, Metadata metadata, ConnectorSession session)
+    QueryPlanner(Analysis analysis, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, Metadata metadata, Session session)
     {
         Preconditions.checkNotNull(analysis, "analysis is null");
         Preconditions.checkNotNull(symbolAllocator, "symbolAllocator is null");
@@ -156,12 +156,12 @@ class QueryPlanner
     {
         RelationPlan relationPlan;
 
-        if (node.getFrom() == null || node.getFrom().isEmpty()) {
-            relationPlan = planImplicitTable();
+        if (node.getFrom().isPresent()) {
+            relationPlan = new RelationPlanner(analysis, symbolAllocator, idAllocator, metadata, session)
+                    .process(node.getFrom().get(), null);
         }
         else {
-            relationPlan = new RelationPlanner(analysis, symbolAllocator, idAllocator, metadata, session)
-                    .process(Iterables.getOnlyElement(node.getFrom()), null);
+            relationPlan = planImplicitTable();
         }
 
         TranslationMap translations = new TranslationMap(relationPlan, analysis);
@@ -231,7 +231,7 @@ class QueryPlanner
             Symbol symbol = symbolAllocator.newSymbol(expression, Objects.firstNonNull(coercion, analysis.getType(expression)));
             Expression rewritten = subPlan.rewrite(expression);
             if (coercion != null) {
-                rewritten = new Cast(rewritten, coercion.getName());
+                rewritten = new Cast(rewritten, coercion.getTypeSignature().toString());
             }
             projections.put(symbol, rewritten);
             translations.put(expression, symbol);

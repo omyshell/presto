@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.metadata;
 
-import com.facebook.presto.operator.Description;
 import com.facebook.presto.operator.aggregation.ApproximateAverageAggregations;
+import com.facebook.presto.operator.aggregation.ApproximateCountAggregation;
 import com.facebook.presto.operator.aggregation.ApproximateCountColumnAggregations;
 import com.facebook.presto.operator.aggregation.ApproximateCountDistinctAggregations;
 import com.facebook.presto.operator.aggregation.ApproximateDoublePercentileAggregations;
@@ -24,30 +24,26 @@ import com.facebook.presto.operator.aggregation.ApproximateSumAggregations;
 import com.facebook.presto.operator.aggregation.AverageAggregations;
 import com.facebook.presto.operator.aggregation.BooleanMaxAggregation;
 import com.facebook.presto.operator.aggregation.BooleanMinAggregation;
-import com.facebook.presto.operator.aggregation.CountColumnAggregations;
+import com.facebook.presto.operator.aggregation.CountAggregation;
 import com.facebook.presto.operator.aggregation.CountIfAggregation;
 import com.facebook.presto.operator.aggregation.DoubleMaxAggregation;
 import com.facebook.presto.operator.aggregation.DoubleMinAggregation;
 import com.facebook.presto.operator.aggregation.DoubleSumAggregation;
-import com.facebook.presto.operator.aggregation.GenericAggregationFunctionFactory;
-import com.facebook.presto.operator.aggregation.InternalAggregationFunction;
 import com.facebook.presto.operator.aggregation.LongMaxAggregation;
 import com.facebook.presto.operator.aggregation.LongMinAggregation;
 import com.facebook.presto.operator.aggregation.LongSumAggregation;
-import com.facebook.presto.operator.aggregation.MaxByAggregations;
 import com.facebook.presto.operator.aggregation.MergeHyperLogLogAggregation;
+import com.facebook.presto.operator.aggregation.NumericHistogramAggregation;
 import com.facebook.presto.operator.aggregation.VarBinaryMaxAggregation;
 import com.facebook.presto.operator.aggregation.VarBinaryMinAggregation;
 import com.facebook.presto.operator.aggregation.VarianceAggregation;
+import com.facebook.presto.operator.scalar.ArrayFunctions;
 import com.facebook.presto.operator.scalar.ColorFunctions;
 import com.facebook.presto.operator.scalar.DateTimeFunctions;
 import com.facebook.presto.operator.scalar.HyperLogLogFunctions;
 import com.facebook.presto.operator.scalar.JsonFunctions;
-import com.facebook.presto.operator.scalar.JsonPath;
 import com.facebook.presto.operator.scalar.MathFunctions;
 import com.facebook.presto.operator.scalar.RegexpFunctions;
-import com.facebook.presto.operator.scalar.ScalarFunction;
-import com.facebook.presto.operator.scalar.ScalarOperator;
 import com.facebook.presto.operator.scalar.StringFunctions;
 import com.facebook.presto.operator.scalar.UrlFunctions;
 import com.facebook.presto.operator.scalar.VarbinaryFunctions;
@@ -75,15 +71,11 @@ import com.facebook.presto.operator.window.NthValueFunction.DoubleNthValueFuncti
 import com.facebook.presto.operator.window.NthValueFunction.VarcharNthValueFunction;
 import com.facebook.presto.operator.window.PercentRankFunction;
 import com.facebook.presto.operator.window.RankFunction;
-import com.facebook.presto.operator.window.ReflectionWindowFunctionSupplier;
 import com.facebook.presto.operator.window.RowNumberFunction;
-import com.facebook.presto.operator.window.WindowFunction;
-import com.facebook.presto.operator.window.WindowFunctionSupplier;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.StandardErrorCode;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.spi.type.TypeSignature;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.type.BigintOperators;
 import com.facebook.presto.type.BooleanOperators;
@@ -94,7 +86,6 @@ import com.facebook.presto.type.HyperLogLogOperators;
 import com.facebook.presto.type.IntervalDayTimeOperators;
 import com.facebook.presto.type.IntervalYearMonthOperators;
 import com.facebook.presto.type.LikeFunctions;
-import com.facebook.presto.type.SqlType;
 import com.facebook.presto.type.TimeOperators;
 import com.facebook.presto.type.TimeWithTimeZoneOperators;
 import com.facebook.presto.type.TimestampOperators;
@@ -102,48 +93,46 @@ import com.facebook.presto.type.TimestampWithTimeZoneOperators;
 import com.facebook.presto.type.VarbinaryOperators;
 import com.facebook.presto.type.VarcharOperators;
 import com.facebook.presto.util.IterableTransformer;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
 import com.google.common.base.Predicate;
-import com.google.common.base.Throwables;
-import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
 import com.google.common.primitives.Primitives;
 import io.airlift.slice.Slice;
-import org.joni.Regex;
 
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
-import java.lang.annotation.Annotation;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
-import java.lang.reflect.AnnotatedElement;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
 
-import static com.facebook.presto.metadata.FunctionInfo.isAggregationPredicate;
-import static com.facebook.presto.metadata.FunctionInfo.isHiddenPredicate;
-import static com.facebook.presto.operator.aggregation.ApproximateCountAggregation.APPROXIMATE_COUNT_AGGREGATION;
-import static com.facebook.presto.operator.aggregation.CountAggregation.COUNT;
+import static com.facebook.presto.metadata.ParametricFunctionUtils.isAggregationPredicate;
+import static com.facebook.presto.metadata.ParametricFunctionUtils.isHiddenPredicate;
+import static com.facebook.presto.operator.aggregation.CountColumn.COUNT_COLUMN;
+import static com.facebook.presto.operator.aggregation.MaxBy.MAX_BY;
+import static com.facebook.presto.operator.scalar.ArrayCardinalityFunction.ARRAY_CARDINALITY;
+import static com.facebook.presto.operator.scalar.ArrayConstructor.ARRAY_CONSTRUCTOR;
+import static com.facebook.presto.operator.scalar.ArraySubscriptOperator.ARRAY_SUBSCRIPT;
+import static com.facebook.presto.operator.scalar.ArrayToJsonCast.ARRAY_TO_JSON;
+import static com.facebook.presto.operator.scalar.IdentityCast.IDENTITY_CAST;
+import static com.facebook.presto.operator.scalar.MapCardinalityFunction.MAP_CARDINALITY;
+import static com.facebook.presto.operator.scalar.MapSubscriptOperator.MAP_SUBSCRIPT;
+import static com.facebook.presto.operator.scalar.MapToJsonCast.MAP_TO_JSON;
+import static com.facebook.presto.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.spi.type.DateType.DATE;
@@ -152,29 +141,28 @@ import static com.facebook.presto.spi.type.TimeType.TIME;
 import static com.facebook.presto.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
 import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.type.JsonPathType.JSON_PATH;
 import static com.facebook.presto.type.LikePatternType.LIKE_PATTERN;
 import static com.facebook.presto.type.RegexpType.REGEXP;
-import static com.facebook.presto.type.TypeUtils.nameGetter;
+import static com.facebook.presto.type.TypeUtils.resolveTypes;
+import static com.facebook.presto.type.TypeUtils.typeSignatureGetter;
 import static com.facebook.presto.type.UnknownType.UNKNOWN;
-import static com.google.common.base.CaseFormat.LOWER_CAMEL;
-import static com.google.common.base.CaseFormat.LOWER_UNDERSCORE;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Predicates.not;
 import static java.lang.String.format;
-import static java.lang.invoke.MethodHandles.lookup;
 
 @ThreadSafe
 public class FunctionRegistry
 {
     private static final String MAGIC_LITERAL_FUNCTION_PREFIX = "$literal$";
+    private static final String OPERATOR_PREFIX = "$operator$";
 
     // hack: java classes for types that can be used with magic literals
     private static final Set<Class<?>> SUPPORTED_LITERAL_TYPES = ImmutableSet.<Class<?>>of(long.class, double.class, Slice.class, boolean.class);
-    public static final Set<Class<?>> NULLABLE_ARGUMENT_TYPES = ImmutableSet.<Class<?>>of(Boolean.class, Long.class, Double.class, Slice.class);
 
     private final TypeManager typeManager;
     private volatile FunctionMap functions = new FunctionMap();
@@ -225,12 +213,11 @@ public class FunctionRegistry
                 .window("lead", VARCHAR, ImmutableList.<Type>of(VARCHAR), VarcharLeadFunction.class)
                 .window("lead", VARCHAR, ImmutableList.<Type>of(VARCHAR, BIGINT), VarcharLeadFunction.class)
                 .window("lead", VARCHAR, ImmutableList.<Type>of(VARCHAR, BIGINT, VARCHAR), VarcharLeadFunction.class)
-                .aggregate(COUNT)
+                .aggregate(CountAggregation.class)
                 .aggregate(VarianceAggregation.class)
                 .aggregate(ApproximateLongPercentileAggregations.class)
                 .aggregate(ApproximateDoublePercentileAggregations.class)
                 .aggregate(CountIfAggregation.class)
-                .aggregate(CountColumnAggregations.class)
                 .aggregate(BooleanMinAggregation.class)
                 .aggregate(BooleanMaxAggregation.class)
                 .aggregate(DoubleMinAggregation.class)
@@ -245,7 +232,7 @@ public class FunctionRegistry
                 .aggregate(ApproximateCountDistinctAggregations.class)
                 .aggregate(MergeHyperLogLogAggregation.class)
                 .aggregate(ApproximateSetAggregation.class)
-                .aggregate(MaxByAggregations.getAggregations(typeManager))
+                .aggregate(NumericHistogramAggregation.class)
                 .scalar(StringFunctions.class)
                 .scalar(VarbinaryFunctions.class)
                 .scalar(RegexpFunctions.class)
@@ -269,29 +256,40 @@ public class FunctionRegistry
                 .scalar(TimestampWithTimeZoneOperators.class)
                 .scalar(DateTimeOperators.class)
                 .scalar(HyperLogLogOperators.class)
-                .scalar(LikeFunctions.class);
+                .scalar(LikeFunctions.class)
+                .scalar(ArrayFunctions.class)
+                .function(ARRAY_CONSTRUCTOR)
+                .function(ARRAY_SUBSCRIPT)
+                .function(ARRAY_CARDINALITY)
+                .function(MAP_CARDINALITY)
+                .function(MAP_SUBSCRIPT)
+                .function(IDENTITY_CAST)
+                .function(MAX_BY)
+                .function(COUNT_COLUMN)
+                .function(ARRAY_TO_JSON)
+                .function(MAP_TO_JSON);
 
         if (experimentalSyntaxEnabled) {
             builder.aggregate(ApproximateAverageAggregations.class)
                     .aggregate(ApproximateSumAggregations.class)
-                    .aggregate(APPROXIMATE_COUNT_AGGREGATION)
+                    .aggregate(ApproximateCountAggregation.class)
                     .aggregate(ApproximateCountColumnAggregations.class);
         }
 
-        addFunctions(builder.getFunctions(), builder.getOperators());
+        addFunctions(builder.getFunctions());
     }
 
-    public final synchronized void addFunctions(List<FunctionInfo> functions, Multimap<OperatorType, FunctionInfo> operators)
+    public final synchronized void addFunctions(List<? extends ParametricFunction> functions)
     {
-        for (FunctionInfo function : functions) {
-            checkArgument(this.functions.get(function.getSignature()) == null,
-                    "Function already registered: %s", function.getSignature());
+        for (ParametricFunction function : functions) {
+            for (ParametricFunction existingFunction : this.functions.list()) {
+                checkArgument(!function.getSignature().equals(existingFunction.getSignature()), "Function already registered: %s", function.getSignature());
+            }
         }
-
-        this.functions = new FunctionMap(this.functions, functions, operators);
+        this.functions = new FunctionMap(this.functions, functions);
     }
 
-    public List<FunctionInfo> list()
+    public List<ParametricFunction> list()
     {
         return FluentIterable.from(functions.list())
                 .filter(not(isHiddenPredicate()))
@@ -303,33 +301,43 @@ public class FunctionRegistry
         return Iterables.any(functions.get(name), isAggregationPredicate());
     }
 
-    public FunctionInfo resolveFunction(QualifiedName name, List<String> parameterTypes, final boolean approximate)
+    public FunctionInfo resolveFunction(QualifiedName name, List<TypeSignature> parameterTypes, final boolean approximate)
     {
-        List<FunctionInfo> candidates = IterableTransformer.on(functions.get(name)).select(new Predicate<FunctionInfo>() {
+        List<ParametricFunction> candidates = IterableTransformer.on(functions.get(name)).select(new Predicate<ParametricFunction>() {
             @Override
-            public boolean apply(FunctionInfo input)
+            public boolean apply(ParametricFunction input)
             {
                 return input.isScalar() || input.isApproximate() == approximate;
             }
         }).list();
 
+        List<Type> resolvedTypes = resolveTypes(parameterTypes, typeManager);
         // search for exact match
-        for (FunctionInfo functionInfo : candidates) {
-            if (functionInfo.getArgumentTypes().equals(parameterTypes)) {
-                return functionInfo;
+        FunctionInfo match = null;
+        for (ParametricFunction function : candidates) {
+            Map<String, Type> boundTypeParameters = function.getSignature().bindTypeParameters(resolvedTypes, false, typeManager);
+            if (boundTypeParameters != null) {
+                checkArgument(match == null, "Ambiguous call to %s with parameters %s", name, parameterTypes);
+                match = function.specialize(boundTypeParameters, resolvedTypes.size(), typeManager);
             }
         }
 
+        if (match != null) {
+            return match;
+        }
+
         // search for coerced match
-        for (FunctionInfo functionInfo : candidates) {
-            if (canCoerce(resolveTypes(parameterTypes, typeManager), resolveTypes(functionInfo.getArgumentTypes(), typeManager))) {
-                return functionInfo;
+        for (ParametricFunction function : candidates) {
+            Map<String, Type> boundTypeParameters = function.getSignature().bindTypeParameters(resolvedTypes, true, typeManager);
+            if (boundTypeParameters != null) {
+                // TODO: This should also check for ambiguities
+                return function.specialize(boundTypeParameters, resolvedTypes.size(), typeManager);
             }
         }
 
         List<String> expectedParameters = new ArrayList<>();
-        for (FunctionInfo functionInfo : candidates) {
-            expectedParameters.add(format("%s(%s)", name, Joiner.on(", ").join(functionInfo.getArgumentTypes())));
+        for (ParametricFunction function : candidates) {
+            expectedParameters.add(format("%s(%s)", name, Joiner.on(", ").join(function.getSignature().getArgumentTypes())));
         }
         String parameters = Joiner.on(", ").join(parameterTypes);
         String message = format("Function %s not registered", name);
@@ -343,8 +351,8 @@ public class FunctionRegistry
             String typeName = name.getSuffix().substring(MAGIC_LITERAL_FUNCTION_PREFIX.length());
 
             // lookup the type
-            Type type = typeManager.getType(typeName);
-            checkArgument(type != null, "Type %s not registered", typeName);
+            Type type = typeManager.getType(parseTypeSignature(typeName));
+            checkNotNull(type, "Type %s not registered", typeName);
 
             // verify we have one parameter of the proper type
             checkArgument(parameterTypes.size() == 1, "Expected one argument to literal function, but got %s", parameterTypes);
@@ -367,45 +375,57 @@ public class FunctionRegistry
                     ImmutableList.of(false));
         }
 
-        throw new PrestoException(StandardErrorCode.FUNCTION_NOT_FOUND.toErrorCode(), message);
+        throw new PrestoException(FUNCTION_NOT_FOUND, message);
     }
 
     public FunctionInfo getExactFunction(Signature signature)
     {
-        return functions.get(signature);
+        Iterable<ParametricFunction> candidates = functions.get(QualifiedName.of(signature.getName()));
+        // search for exact match
+        for (ParametricFunction operator : candidates) {
+            Type returnType = typeManager.getType(signature.getReturnType());
+            List<Type> argumentTypes = resolveTypes(signature.getArgumentTypes(), typeManager);
+            Map<String, Type> boundTypeParameters = operator.getSignature().bindTypeParameters(returnType, argumentTypes, false, typeManager);
+            if (boundTypeParameters != null) {
+                return operator.specialize(boundTypeParameters, signature.getArgumentTypes().size(), typeManager);
+            }
+        }
+        return null;
+    }
+
+    @VisibleForTesting
+    public List<ParametricFunction> listOperators()
+    {
+        final Set<String> operatorNames = FluentIterable.from(Arrays.asList(OperatorType.values())).transform(new Function<OperatorType, String>() {
+            @Override
+            public String apply(OperatorType input)
+            {
+                return mangleOperatorName(input);
+            }
+        }).toSet();
+        return FluentIterable.from(functions.functions.values()).filter(new Predicate<ParametricFunction>() {
+            @Override
+            public boolean apply(ParametricFunction input)
+            {
+                return operatorNames.contains(input.getSignature().getName());
+            }
+        }).toList();
     }
 
     public FunctionInfo resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes)
             throws OperatorNotFoundException
     {
-        Iterable<FunctionInfo> candidates = functions.getOperators(operatorType);
-
-        // search for exact match
-        for (FunctionInfo operatorInfo : candidates) {
-            if (operatorInfo.getArgumentTypes().equals(argumentTypes)) {
-                return operatorInfo;
+        try {
+            return resolveFunction(QualifiedName.of(mangleOperatorName(operatorType)), Lists.transform(argumentTypes, typeSignatureGetter()), false);
+        }
+        catch (PrestoException e) {
+            if (e.getErrorCode().getCode() == FUNCTION_NOT_FOUND.toErrorCode().getCode()) {
+                throw new OperatorNotFoundException(operatorType, argumentTypes);
+            }
+            else {
+                throw e;
             }
         }
-
-        // search for coerced match
-        for (FunctionInfo operatorInfo : candidates) {
-            if (canCoerce(argumentTypes, resolveTypes(operatorInfo.getArgumentTypes(), typeManager))) {
-                return operatorInfo;
-            }
-        }
-
-        throw new OperatorNotFoundException(operatorType, argumentTypes);
-    }
-
-    private static List<Type> resolveTypes(List<String> typeNames, final TypeManager typeManager)
-    {
-        return FluentIterable.from(typeNames).transform(new Function<String, Type>() {
-            @Override
-            public Type apply(String type)
-            {
-                return checkNotNull(typeManager.getType(type), "Type '%s' not found", type);
-            }
-        }).toList();
     }
 
     public FunctionInfo getCoercion(Type fromType, Type toType)
@@ -413,27 +433,15 @@ public class FunctionRegistry
         return getExactOperator(OperatorType.CAST, ImmutableList.of(fromType), toType);
     }
 
-    public FunctionInfo getExactOperator(OperatorType operatorType, List<? extends Type> argumentTypes, Type returnType)
+    private FunctionInfo getExactOperator(OperatorType operatorType, List<? extends Type> argumentTypes, Type returnType)
             throws OperatorNotFoundException
     {
-        Iterable<FunctionInfo> candidates = functions.getOperators(operatorType);
+        FunctionInfo functionInfo = getExactFunction(Signature.internalOperator(operatorType.name(), returnType.getTypeSignature(), Lists.transform(argumentTypes, typeSignatureGetter())));
 
-        List<String> argumentTypeNames = FluentIterable.from(argumentTypes).transform(nameGetter()).toList();
-
-        // search for exact match
-        for (FunctionInfo operatorInfo : candidates) {
-            if (operatorInfo.getReturnType().equals(returnType.getName()) && operatorInfo.getArgumentTypes().equals(argumentTypeNames)) {
-                return operatorInfo;
-            }
+        if (functionInfo == null) {
+            throw new OperatorNotFoundException(operatorType, argumentTypes, returnType);
         }
-
-        // if identity cast, return a custom operator info
-        if ((operatorType == OperatorType.CAST) && (argumentTypes.size() == 1) && argumentTypes.get(0).equals(returnType)) {
-            MethodHandle identity = MethodHandles.identity(returnType.getJavaType());
-            return operatorInfo(OperatorType.CAST, returnType.getName(), FluentIterable.from(argumentTypes).transform(nameGetter()).toList(), identity, false, ImmutableList.of(false));
-        }
-
-        throw new OperatorNotFoundException(operatorType, argumentTypes, returnType);
+        return functionInfo;
     }
 
     public static boolean canCoerce(List<? extends Type> actualTypes, List<Type> expectedTypes)
@@ -526,48 +534,6 @@ public class FunctionRegistry
         return Optional.absent();
     }
 
-    private static List<Type> parameterTypes(TypeManager typeManager, Method method)
-    {
-        Annotation[][] parameterAnnotations = method.getParameterAnnotations();
-
-        ImmutableList.Builder<Type> types = ImmutableList.builder();
-        for (int i = 0; i < method.getParameterTypes().length; i++) {
-            Class<?> clazz = method.getParameterTypes()[i];
-            // skip session parameters
-            if (clazz == ConnectorSession.class) {
-                continue;
-            }
-
-            // find the explicit type annotation if present
-            SqlType explicitType = null;
-            for (Annotation annotation : parameterAnnotations[i]) {
-                if (annotation instanceof SqlType) {
-                    explicitType = (SqlType) annotation;
-                    break;
-                }
-            }
-            checkArgument(explicitType != null, "Method %s argument %s does not have a @SqlType annotation", method, i);
-            types.add(type(typeManager, explicitType));
-        }
-        return types.build();
-    }
-
-    private static List<Class<?>> getParameterTypes(Class<?>... types)
-    {
-        ImmutableList<Class<?>> parameterTypes = ImmutableList.copyOf(types);
-        if (!parameterTypes.isEmpty() && parameterTypes.get(0) == ConnectorSession.class) {
-            parameterTypes = parameterTypes.subList(1, parameterTypes.size());
-        }
-        return parameterTypes;
-    }
-
-    private static Type type(TypeManager typeManager, SqlType explicitType)
-    {
-        Type type = typeManager.getType(explicitType.value());
-        checkNotNull(type, "No type found for '%s'", explicitType.value());
-        return type;
-    }
-
     public static Type type(Class<?> clazz)
     {
         clazz = Primitives.unwrap(clazz);
@@ -588,9 +554,9 @@ public class FunctionRegistry
 
     public static Signature getMagicLiteralFunctionSignature(Type type)
     {
-        return new Signature(MAGIC_LITERAL_FUNCTION_PREFIX + type.getName(),
-                type.getName(),
-                Lists.transform(ImmutableList.of(type(type.getJavaType())), nameGetter()));
+        return new Signature(MAGIC_LITERAL_FUNCTION_PREFIX + type.getTypeSignature(),
+                type.getTypeSignature(),
+                Lists.transform(ImmutableList.of(type(type.getJavaType())), typeSignatureGetter()));
     }
 
     public static boolean isSupportedLiteralType(Type type)
@@ -598,331 +564,69 @@ public class FunctionRegistry
         return SUPPORTED_LITERAL_TYPES.contains(type.getJavaType());
     }
 
-    public static class FunctionListBuilder
+    public static FunctionInfo operatorInfo(OperatorType operatorType, TypeSignature returnType, List<TypeSignature> argumentTypes, MethodHandle method, boolean nullable, List<Boolean> nullableArguments)
     {
-        private final List<FunctionInfo> functions = new ArrayList<>();
-        private final Multimap<OperatorType, FunctionInfo> operators = ArrayListMultimap.create();
-        private final TypeManager typeManager;
+        operatorType.validateSignature(returnType, argumentTypes);
 
-        public FunctionListBuilder(TypeManager typeManager)
-        {
-            this.typeManager = checkNotNull(typeManager, "typeManager is null");
-        }
-
-        public FunctionListBuilder window(String name, Type returnType, List<? extends Type> argumentTypes, Class<? extends WindowFunction> functionClass)
-        {
-            WindowFunctionSupplier windowFunctionSupplier = new ReflectionWindowFunctionSupplier<>(
-                    new Signature(name, returnType.getName(), Lists.transform(ImmutableList.copyOf(argumentTypes), nameGetter())),
-                    functionClass);
-
-            functions.add(new FunctionInfo(windowFunctionSupplier.getSignature(), windowFunctionSupplier.getDescription(), windowFunctionSupplier));
-            return this;
-        }
-
-        public FunctionListBuilder aggregate(List<InternalAggregationFunction> functions)
-        {
-            for (InternalAggregationFunction function : functions) {
-                aggregate(function);
-            }
-            return this;
-        }
-
-        public FunctionListBuilder aggregate(InternalAggregationFunction function)
-        {
-            String name = function.name();
-            name = name.toLowerCase();
-
-            String description = getDescription(function.getClass());
-            Signature signature = new Signature(name, function.getFinalType().getName(), Lists.transform(ImmutableList.copyOf(function.getParameterTypes()), nameGetter()));
-            functions.add(new FunctionInfo(signature, description, function.getIntermediateType().getName(), function, function.isApproximate()));
-            return this;
-        }
-
-        public FunctionListBuilder aggregate(Class<?> aggregationDefinition)
-        {
-            functions.addAll(GenericAggregationFunctionFactory.fromAggregationDefinition(aggregationDefinition, typeManager).listFunctions());
-            return this;
-        }
-
-        public FunctionListBuilder scalar(Signature signature, MethodHandle function, boolean deterministic, String description, boolean hidden, boolean nullable, List<Boolean> nullableArguments)
-        {
-            functions.add(new FunctionInfo(signature, description, hidden, function, deterministic, nullable, nullableArguments));
-            return this;
-        }
-
-        private FunctionListBuilder operator(OperatorType operatorType, Type returnType, List<Type> parameterTypes, MethodHandle function, boolean nullable, List<Boolean> nullableArguments)
-        {
-            FunctionInfo operatorInfo = operatorInfo(operatorType, returnType.getName(), Lists.transform(parameterTypes, nameGetter()), function, nullable, nullableArguments);
-            operators.put(operatorType, operatorInfo);
-            functions.add(operatorInfo);
-            return this;
-        }
-
-        public FunctionListBuilder scalar(Class<?> clazz)
-        {
-            try {
-                boolean foundOne = false;
-                for (Method method : clazz.getMethods()) {
-                    foundOne = processScalarFunction(method) || foundOne;
-                    foundOne = processScalarOperator(method) || foundOne;
-                }
-                checkArgument(foundOne, "Expected class %s to contain at least one method annotated with @%s", clazz.getName(), ScalarFunction.class.getSimpleName());
-            }
-            catch (IllegalAccessException e) {
-                throw Throwables.propagate(e);
-            }
-            return this;
-        }
-
-        private boolean processScalarFunction(Method method)
-                throws IllegalAccessException
-        {
-            ScalarFunction scalarFunction = method.getAnnotation(ScalarFunction.class);
-            if (scalarFunction == null) {
-                return false;
-            }
-            checkValidMethod(method);
-            MethodHandle methodHandle = lookup().unreflect(method);
-            String name = scalarFunction.value();
-            if (name.isEmpty()) {
-                name = camelToSnake(method.getName());
-            }
-            SqlType returnTypeAnnotation = method.getAnnotation(SqlType.class);
-            checkArgument(returnTypeAnnotation != null, "Method %s return type does not have a @SqlType annotation", method);
-            Type returnType = type(typeManager, returnTypeAnnotation);
-            Signature signature = new Signature(name.toLowerCase(), returnType.getName(), Lists.transform(parameterTypes(typeManager, method), nameGetter()));
-
-            verifyMethodSignature(method, signature.getReturnType(), signature.getArgumentTypes(), typeManager);
-
-            List<Boolean> nullableArguments = getNullableArguments(method);
-
-            scalar(signature, methodHandle, scalarFunction.deterministic(), getDescription(method), scalarFunction.hidden(), method.isAnnotationPresent(Nullable.class), nullableArguments);
-            for (String alias : scalarFunction.alias()) {
-                scalar(signature.withAlias(alias.toLowerCase()), methodHandle, scalarFunction.deterministic(), getDescription(method), scalarFunction.hidden(), method.isAnnotationPresent(Nullable.class), nullableArguments);
-            }
-            return true;
-        }
-
-        private static List<Boolean> getNullableArguments(Method method)
-        {
-            List<Boolean> nullableArguments = new ArrayList<>();
-            for (Annotation[] annotations : method.getParameterAnnotations()) {
-                boolean nullable = false;
-                boolean foundSqlType = false;
-                for (Annotation annotation : annotations) {
-                    if (annotation instanceof Nullable) {
-                        nullable = true;
-                    }
-                    if (annotation instanceof SqlType) {
-                        foundSqlType = true;
-                    }
-                }
-                // Check that this is a real argument. For example, some functions take ConnectorSession which isn't a SqlType
-                if (foundSqlType) {
-                    nullableArguments.add(nullable);
-                }
-            }
-            return nullableArguments;
-        }
-
-        private boolean processScalarOperator(Method method)
-                throws IllegalAccessException
-        {
-            ScalarOperator scalarOperator = method.getAnnotation(ScalarOperator.class);
-            if (scalarOperator == null) {
-                return false;
-            }
-            checkValidMethod(method);
-            MethodHandle methodHandle = lookup().unreflect(method);
-            OperatorType operatorType = scalarOperator.value();
-
-            List<Type> parameterTypes = parameterTypes(typeManager, method);
-
-            Type returnType;
-            if (operatorType == OperatorType.HASH_CODE) {
-                // todo hack for hashCode... should be int
-                returnType = BIGINT;
-            }
-            else {
-                SqlType explicitType = method.getAnnotation(SqlType.class);
-                checkArgument(explicitType != null, "Method %s return type does not have a @SqlType annotation", method);
-                returnType = type(typeManager, explicitType);
-
-                verifyMethodSignature(method, returnType.getName(), Lists.transform(parameterTypes, nameGetter()), typeManager);
-            }
-
-            List<Boolean> nullableArguments = getNullableArguments(method);
-
-            operator(operatorType, returnType, parameterTypes, methodHandle, method.isAnnotationPresent(Nullable.class), nullableArguments);
-            return true;
-        }
-
-        private static String getDescription(AnnotatedElement annotatedElement)
-        {
-            Description description = annotatedElement.getAnnotation(Description.class);
-            return (description == null) ? null : description.value();
-        }
-
-        private static String camelToSnake(String name)
-        {
-            return LOWER_CAMEL.to(LOWER_UNDERSCORE, name);
-        }
-
-        private static final Set<Class<?>> SUPPORTED_TYPES = ImmutableSet.of(
-                long.class,
-                Long.class,
-                double.class,
-                Double.class,
-                Slice.class,
-                boolean.class,
-                Boolean.class,
-                Pattern.class,
-                Regex.class,
-                JsonPath.class);
-
-        private static final Set<Class<?>> SUPPORTED_RETURN_TYPES = ImmutableSet.of(
-                long.class,
-                double.class,
-                Slice.class,
-                boolean.class,
-                int.class,
-                Pattern.class,
-                Regex.class,
-                JsonPath.class);
-
-        private static void checkValidMethod(Method method)
-        {
-            String message = "@ScalarFunction method %s is not valid: ";
-
-            checkArgument(Modifier.isStatic(method.getModifiers()), message + "must be static", method);
-
-            checkArgument(SUPPORTED_RETURN_TYPES.contains(Primitives.unwrap(method.getReturnType())), message + "return type not supported", method);
-            if (method.getAnnotation(Nullable.class) != null) {
-                checkArgument(!method.getReturnType().isPrimitive(), message + "annotated with @Nullable but has primitive return type", method);
-            }
-            else {
-                checkArgument(!Primitives.isWrapperType(method.getReturnType()), "not annotated with @Nullable but has boxed primitive return type", method);
-            }
-
-            for (Class<?> type : getParameterTypes(method.getParameterTypes())) {
-                checkArgument(SUPPORTED_TYPES.contains(type), message + "parameter type [%s] not supported", method, type.getName());
-            }
-        }
-
-        public List<FunctionInfo> getFunctions()
-        {
-            return ImmutableList.copyOf(functions);
-        }
-
-        public Multimap<OperatorType, FunctionInfo> getOperators()
-        {
-            return ImmutableMultimap.copyOf(operators);
-        }
-    }
-
-    private static FunctionInfo operatorInfo(OperatorType operatorType, String returnType, List<String> argumentTypes, MethodHandle method, boolean nullable, List<Boolean> nullableArguments)
-    {
-        operatorType.validateSignature(returnType, ImmutableList.copyOf(argumentTypes));
-
-        Signature signature = new Signature(operatorType.name(), returnType, argumentTypes, true);
+        Signature signature = Signature.internalOperator(operatorType.name(), returnType, argumentTypes);
         return new FunctionInfo(signature, operatorType.getOperator(), true, method, true, nullable, nullableArguments);
     }
 
-    private static void verifyMethodSignature(Method method, String returnTypeName, List<String> argumentTypeNames, TypeManager typeManager)
+    public static String mangleOperatorName(OperatorType operatorType)
     {
-        Type returnType = typeManager.getType(returnTypeName);
-        checkNotNull(returnType, "returnType is null");
-        List<Type> argumentTypes = resolveTypes(argumentTypeNames, typeManager);
-        checkArgument(Primitives.unwrap(method.getReturnType()) == returnType.getJavaType(),
-                "Expected method %s return type to be %s (%s)",
-                method,
-                returnType.getJavaType().getName(),
-                returnType);
+        return mangleOperatorName(operatorType.name());
+    }
 
-        // skip Session argument
-        Class<?>[] parameterTypes = method.getParameterTypes();
-        Annotation[][] annotations = method.getParameterAnnotations();
-        if (parameterTypes.length > 0 && parameterTypes[0] == ConnectorSession.class) {
-            parameterTypes = Arrays.copyOfRange(parameterTypes, 1, parameterTypes.length);
-            annotations = Arrays.copyOfRange(annotations, 1, annotations.length);
-        }
+    public static String mangleOperatorName(String operatorName)
+    {
+        return OPERATOR_PREFIX + operatorName;
+    }
 
-        for (int i = 0; i < parameterTypes.length; i++) {
-            Class<?> actualType = parameterTypes[i];
-            Type expectedType = argumentTypes.get(i);
-            boolean nullable = !FluentIterable.from(Arrays.asList(annotations[i])).filter(Nullable.class).isEmpty();
-            // Only allow boxing for functions that need to see nulls
-            if (Primitives.isWrapperType(actualType)) {
-                checkArgument(nullable, "Method %s has parameter with type %s that is missing @Nullable", method, actualType);
-            }
-            if (nullable) {
-                checkArgument(NULLABLE_ARGUMENT_TYPES.contains(actualType), "Method %s has parameter type %s, but @Nullable is not supported on this type", method, actualType);
-            }
-            checkArgument(Primitives.unwrap(actualType) == expectedType.getJavaType(),
-                    "Expected method %s parameter %s type to be %s (%s)",
-                    method,
-                    i,
-                    expectedType.getJavaType().getName(),
-                    expectedType);
-        }
+    @VisibleForTesting
+    public static OperatorType unmangleOperator(String mangledName)
+    {
+        checkArgument(mangledName.startsWith(OPERATOR_PREFIX), "%s is not a mangled operator name", mangledName);
+        return OperatorType.valueOf(mangledName.substring(OPERATOR_PREFIX.length()));
     }
 
     private static class FunctionMap
     {
-        private final Multimap<QualifiedName, FunctionInfo> functionsByName;
-        private final Map<Signature, FunctionInfo> functionsBySignature;
-        private final Multimap<OperatorType, FunctionInfo> byOperator;
+        private final Multimap<QualifiedName, ParametricFunction> functions;
 
         public FunctionMap()
         {
-            functionsByName = ImmutableListMultimap.of();
-            functionsBySignature = ImmutableMap.of();
-            byOperator = ImmutableListMultimap.of();
+            functions = ImmutableListMultimap.of();
         }
 
-        public FunctionMap(FunctionMap map, Iterable<FunctionInfo> functions, Multimap<OperatorType, FunctionInfo> operators)
+        public FunctionMap(FunctionMap map, Iterable<? extends ParametricFunction> functions)
         {
-            functionsByName = ImmutableListMultimap.<QualifiedName, FunctionInfo>builder()
-                    .putAll(map.functionsByName)
-                    .putAll(Multimaps.index(functions, FunctionInfo.nameGetter()))
-                    .build();
-
-            functionsBySignature = ImmutableMap.<Signature, FunctionInfo>builder()
-                    .putAll(map.functionsBySignature)
-                    .putAll(Maps.uniqueIndex(functions, FunctionInfo.handleGetter()))
-                    .build();
-
-            byOperator = ImmutableListMultimap.<OperatorType, FunctionInfo>builder()
-                    .putAll(map.byOperator)
-                    .putAll(operators)
+            this.functions = ImmutableListMultimap.<QualifiedName, ParametricFunction>builder()
+                    .putAll(map.functions)
+                    .putAll(Multimaps.index(functions, new Function<ParametricFunction, QualifiedName>() {
+                        @Override
+                        public QualifiedName apply(ParametricFunction input)
+                        {
+                            return QualifiedName.of(input.getSignature().getName());
+                        }
+                    }))
                     .build();
 
             // Make sure all functions with the same name are aggregations or none of them are
-            for (Map.Entry<QualifiedName, Collection<FunctionInfo>> entry : functionsByName.asMap().entrySet()) {
-                Collection<FunctionInfo> infos = entry.getValue();
-                checkState(Iterables.all(infos, isAggregationPredicate()) || !Iterables.any(infos, isAggregationPredicate()),
+            for (Map.Entry<QualifiedName, Collection<ParametricFunction>> entry : this.functions.asMap().entrySet()) {
+                Collection<ParametricFunction> values = entry.getValue();
+                checkState(Iterables.all(values, isAggregationPredicate()) || !Iterables.any(values, isAggregationPredicate()),
                         "'%s' is both an aggregation and a scalar function", entry.getKey());
             }
         }
 
-        public List<FunctionInfo> list()
+        public List<ParametricFunction> list()
         {
-            return ImmutableList.copyOf(functionsByName.values());
+            return ImmutableList.copyOf(functions.values());
         }
 
-        public Collection<FunctionInfo> get(QualifiedName name)
+        public Collection<ParametricFunction> get(QualifiedName name)
         {
-            return functionsByName.get(name);
-        }
-
-        public FunctionInfo get(Signature signature)
-        {
-            return functionsBySignature.get(signature);
-        }
-
-        public Collection<FunctionInfo> getOperators(OperatorType operatorType)
-        {
-            return byOperator.get(operatorType);
+            return functions.get(name);
         }
     }
 }

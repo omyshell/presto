@@ -204,7 +204,7 @@ public final class ByteCodeUtils
         return block;
     }
 
-    private static ByteCodeNode boxPrimitiveIfNecessary(CompilerContext context, Class<?> type)
+    public static ByteCodeNode boxPrimitiveIfNecessary(CompilerContext context, Class<?> type)
     {
         if (!Primitives.isWrapperType(type)) {
             return NOP;
@@ -222,6 +222,11 @@ public final class ByteCodeUtils
         else if (type == Boolean.class) {
             notNull.invokeStatic(Boolean.class, "valueOf", Boolean.class, boolean.class);
             expectedCurrentStackType = boolean.class;
+        }
+        else if (type == Void.class) {
+            notNull.pushNull()
+                    .checkCast(Void.class);
+            expectedCurrentStackType = void.class;
         }
         else {
             throw new UnsupportedOperationException("not yet implemented: " + type);
@@ -250,6 +255,11 @@ public final class ByteCodeUtils
 
     public static ByteCodeNode generateWrite(CallSiteBinder callSiteBinder, CompilerContext context, Variable wasNullVariable, Type type)
     {
+        if (type.getJavaType() == void.class) {
+            return new Block(context).comment("output.appendNull();")
+                    .invokeInterface(BlockBuilder.class, "appendNull", BlockBuilder.class)
+                    .pop();
+        }
         String methodName = "write" + Primitives.wrap(type.getJavaType()).getSimpleName();
 
         // the stack contains [output, value]
@@ -271,7 +281,7 @@ public final class ByteCodeUtils
                                 .invokeInterface(BlockBuilder.class, "appendNull", BlockBuilder.class)
                                 .pop())
                         .ifFalse(new Block(context)
-                                .comment(type.getName() + "." + methodName + "(output, " + type.getJavaType().getSimpleName() + ")")
+                                .comment(type.getTypeSignature() + "." + methodName + "(output, " + type.getJavaType().getSimpleName() + ")")
                                 .putVariable(tempValue)
                                 .putVariable(tempOutput)
                                 .append(loadConstant(context, callSiteBinder.bind(type, Type.class)))

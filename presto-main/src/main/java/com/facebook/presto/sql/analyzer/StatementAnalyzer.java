@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.sql.analyzer;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.MetadataUtil;
 import com.facebook.presto.metadata.QualifiedTableName;
 import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.tree.AllColumns;
@@ -108,7 +108,7 @@ class StatementAnalyzer
 {
     private final Analysis analysis;
     private final Metadata metadata;
-    private final ConnectorSession session;
+    private final Session session;
     private final Optional<QueryExplainer> queryExplainer;
     private final boolean experimentalSyntaxEnabled;
     private final SqlParser sqlParser;
@@ -117,7 +117,7 @@ class StatementAnalyzer
             Analysis analysis,
             Metadata metadata,
             SqlParser sqlParser,
-            ConnectorSession session,
+            Session session,
             boolean experimentalSyntaxEnabled,
             Optional<QueryExplainer> queryExplainer)
     {
@@ -306,7 +306,7 @@ class StatementAnalyzer
             }
             Expression key = equal(nameReference("partition_key"), new StringLiteral(column.getName()));
             Expression value = caseWhen(key, nameReference("partition_value"));
-            value = new Cast(value, column.getType().getName());
+            value = new Cast(value, column.getType().getTypeSignature().toString());
             Expression function = functionCall("max", value);
             selectList.add(new SingleColumn(function, column.getName()));
             wrappedList.add(unaliasedName(column.getName()));
@@ -482,7 +482,7 @@ class StatementAnalyzer
                 Optional.<With>absent(),
                 new QuerySpecification(
                         selectList(new AllColumns()),
-                        ImmutableList.of(aliased(
+                        Optional.of(aliased(
                                 values(row(new StringLiteral((queryPlan)))),
                                 "plan",
                                 ImmutableList.of("Query Plan")

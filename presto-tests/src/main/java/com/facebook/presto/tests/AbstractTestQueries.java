@@ -13,8 +13,9 @@
  */
 package com.facebook.presto.tests;
 
-import com.facebook.presto.metadata.FunctionInfo;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.metadata.FunctionListBuilder;
+import com.facebook.presto.metadata.ParametricFunction;
+import com.facebook.presto.operator.scalar.MapConstructor;
 import com.facebook.presto.spi.type.TimeZoneKey;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.testing.MaterializedResult;
@@ -70,16 +71,61 @@ public abstract class AbstractTestQueries
         extends AbstractTestQueryFramework
 {
     // We can just use the default type registry, since we don't use any parametric types
-    protected static final List<FunctionInfo> CUSTOM_FUNCTIONS = new FunctionRegistry.FunctionListBuilder(new TypeRegistry())
+    protected static final List<ParametricFunction> CUSTOM_FUNCTIONS = new FunctionListBuilder(new TypeRegistry())
             .aggregate(CustomSum.class)
             .window("custom_rank", BIGINT, ImmutableList.<Type>of(), CustomRank.class)
             .scalar(CustomAdd.class)
             .scalar(CreateHll.class)
+            .function(new MapConstructor(2, new TypeRegistry()))
             .getFunctions();
 
-    public AbstractTestQueries(QueryRunner queryRunner)
+    protected AbstractTestQueries(QueryRunner queryRunner)
     {
         super(queryRunner);
+    }
+
+    @Test
+    public void testUnnest()
+            throws Exception
+    {
+        assertQuery("SELECT 1 FROM (VALUES (ARRAY[1])) AS t (a) CROSS JOIN UNNEST(a)", "SELECT 1");
+        assertQuery("SELECT x[1] FROM UNNEST(ARRAY[ARRAY[2, 2, 3]]) t(x)", "SELECT 2");
+        assertQuery("SELECT x[1][2] FROM UNNEST(ARRAY[ARRAY[ARRAY[2, 2, 3]]]) t(x)", "SELECT 2");
+        assertQuery("SELECT x[2] FROM UNNEST(ARRAY[MAP(1, 'hello', 2, 'hi')]) t(x)", "SELECT 'hi'");
+        assertQuery("SELECT * FROM UNNEST(ARRAY[1, 2, 3])", "SELECT * FROM VALUES (1), (2), (3)");
+        assertQuery("SELECT a FROM UNNEST(ARRAY[1, 2, 3]) t(a)", "SELECT * FROM VALUES (1), (2), (3)");
+        assertQuery("SELECT a, b FROM UNNEST(ARRAY[1, 2], ARRAY[3, 4]) t(a, b)", "SELECT * FROM VALUES (1, 3), (2, 4)");
+        assertQuery("SELECT a, b FROM UNNEST(ARRAY[1, 2, 3], ARRAY[4, 5]) t(a, b)", "SELECT * FROM VALUES (1, 4), (2, 5), (3, NULL)");
+        assertQuery("SELECT a FROM UNNEST(ARRAY['kittens', 'puppies']) t(a)", "SELECT * FROM VALUES ('kittens'), ('puppies')");
+        assertQuery("SELECT a FROM UNNEST(ARRAY[1, NULL, 3]) t(a)", "SELECT * FROM VALUES (1), (NULL), (3)");
+        assertQuery("" +
+                "SELECT a.custkey, t.e " +
+                "FROM (SELECT custkey, ARRAY[1, 2, 3] AS my_array FROM orders ORDER BY orderkey LIMIT 1) a " +
+                "CROSS JOIN UNNEST(my_array) t(e)",
+                "SELECT * FROM (SELECT custkey FROM orders ORDER BY orderkey LIMIT 1) CROSS JOIN (VALUES (1), (2), (3))");
+        assertQuery("" +
+                        "SELECT a.custkey, t.e " +
+                        "FROM (SELECT custkey, ARRAY[1, 2, 3] AS my_array FROM orders ORDER BY orderkey LIMIT 1) a, " +
+                        "UNNEST(my_array) t(e)",
+                "SELECT * FROM (SELECT custkey FROM orders ORDER BY orderkey LIMIT 1) CROSS JOIN (VALUES (1), (2), (3))");
+        assertQuery("SELECT * FROM UNNEST(ARRAY[0, 1]) CROSS JOIN UNNEST(ARRAY[0, 1]) CROSS JOIN UNNEST(ARRAY[0, 1])",
+                "SELECT * FROM VALUES (0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1), (1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)");
+        assertQuery("SELECT * FROM UNNEST(ARRAY[0, 1]), UNNEST(ARRAY[0, 1]), UNNEST(ARRAY[0, 1])",
+                "SELECT * FROM VALUES (0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1), (1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)");
+        assertQuery("SELECT a, b FROM UNNEST(MAP(1, 'cat', 2, 'dog')) t(a, b)", "SELECT * FROM VALUES (1, 'cat'), (2, 'dog')");
+        assertQuery("SELECT a, b FROM UNNEST(MAP(1, 'cat', 2, NULL)) t(a, b)", "SELECT * FROM VALUES (1, 'cat'), (2, NULL)");
+    }
+
+    @Test
+    public void testArrays()
+            throws Exception
+    {
+        assertQuery("SELECT a[1] FROM (SELECT ARRAY[orderkey] AS a FROM orders ORDER BY orderkey) t", "SELECT orderkey FROM orders");
+        assertQuery("SELECT a[1 + cast(round(rand()) AS BIGINT)] FROM (SELECT ARRAY[orderkey, orderkey] AS a FROM orders ORDER BY orderkey) t", "SELECT orderkey FROM orders");
+        assertQuery("SELECT a[1] + 1 FROM (SELECT ARRAY[orderkey] AS a FROM orders ORDER BY orderkey) t", "SELECT orderkey + 1 FROM orders");
+        assertQuery("SELECT a[1] FROM (SELECT ARRAY[orderkey + 1] AS a FROM orders ORDER BY orderkey) t", "SELECT orderkey + 1 FROM orders");
+        assertQuery("SELECT a[1][1] FROM (SELECT ARRAY[ARRAY[orderkey + 1]] AS a FROM orders ORDER BY orderkey) t", "SELECT orderkey + 1 FROM orders");
+        assertQuery("SELECT CARDINALITY(a) FROM (SELECT ARRAY[orderkey, orderkey + 1] AS a FROM orders ORDER BY orderkey) t", "SELECT 2 FROM orders");
     }
 
     @Test
@@ -1772,7 +1818,7 @@ public abstract class AbstractTestQueries
     }
 
     @Test
-    public void testRowNumberLimit()
+    public void testRowNumberUnpartitionedLimit()
             throws Exception
     {
         MaterializedResult actual = computeActual("" +
@@ -1787,7 +1833,7 @@ public abstract class AbstractTestQueries
     }
 
     @Test
-    public void testPartitionedRowNumberLimit()
+    public void testRowNumberPartitionedLimit()
             throws Exception
     {
         MaterializedResult actual = computeActual("" +
@@ -1796,6 +1842,18 @@ public abstract class AbstractTestQueries
                 "   FROM orders\n" +
                 ") WHERE rn <= 5\n");
         MaterializedResult all = computeExpected("SELECT orderkey, orderstatus FROM ORDERS", actual.getTypes());
+
+        // there are 3 distinct orderstatus, so expect 15 rows.
+        assertEquals(actual.getMaterializedRows().size(), 15);
+        assertTrue(all.getMaterializedRows().containsAll(actual.getMaterializedRows()));
+
+        // Test for unreferenced outputs
+        actual = computeActual("" +
+                "SELECT orderkey FROM (\n" +
+                "   SELECT row_number() OVER (PARTITION BY orderstatus) rn, orderkey\n" +
+                "   FROM orders\n" +
+                ") WHERE rn <= 5\n");
+        all = computeExpected("SELECT orderkey FROM ORDERS", actual.getTypes());
 
         // there are 3 distinct orderstatus, so expect 15 rows.
         assertEquals(actual.getMaterializedRows().size(), 15);
@@ -1832,6 +1890,37 @@ public abstract class AbstractTestQueries
                 .row(2, 5, "F")
                 .row(1, 65, "P")
                 .row(2, 197, "P")
+                .build();
+        assertEqualsIgnoreOrder(actual.getMaterializedRows(), expected.getMaterializedRows());
+
+        // Test for unreferenced outputs
+        actual = computeActual("" +
+                "SELECT * FROM (\n" +
+                "   SELECT row_number() OVER (PARTITION BY orderstatus ORDER BY orderkey) rn, orderkey\n" +
+                "   FROM orders\n" +
+                ") WHERE rn <= 2\n");
+        expected = resultBuilder(getSession(), BIGINT, BIGINT)
+                .row(1, 1)
+                .row(2, 2)
+                .row(1, 3)
+                .row(2, 5)
+                .row(1, 65)
+                .row(2, 197)
+                .build();
+        assertEqualsIgnoreOrder(actual.getMaterializedRows(), expected.getMaterializedRows());
+
+        actual = computeActual("" +
+                "SELECT * FROM (\n" +
+                "   SELECT row_number() OVER (PARTITION BY orderstatus ORDER BY orderkey) rn, orderstatus\n" +
+                "   FROM orders\n" +
+                ") WHERE rn <= 2\n");
+        expected = resultBuilder(getSession(), BIGINT, VARCHAR)
+                .row(1, "O")
+                .row(2, "O")
+                .row(1, "F")
+                .row(2, "F")
+                .row(1, "P")
+                .row(2, "P")
                 .build();
         assertEqualsIgnoreOrder(actual.getMaterializedRows(), expected.getMaterializedRows());
     }
@@ -2744,7 +2833,7 @@ public abstract class AbstractTestQueries
         assertQuery("SELECT * FROM (SELECT 1 a) x CROSS JOIN (SELECT 2 b) y");
     }
 
-    @Test(expectedExceptions = RuntimeException.class, expectedExceptionsMessageRegExp = "Implicit cross joins are not yet supported; use CROSS JOIN")
+    @Test
     public void testImplicitCrossJoin()
             throws Exception
     {
@@ -3135,6 +3224,28 @@ public abstract class AbstractTestQueries
                 "    WHERE partkey % 2 = 0)\n" +
                 "  AND\n" +
                 "    orderkey % 2 = 0");
+    }
+
+    @Test
+    public void testUnionAllPredicateMoveAroundWithOverlappingProjections()
+            throws Exception
+    {
+        assertQuery("" +
+                "SELECT COUNT(*)\n" +
+                "FROM (\n" +
+                "  SELECT orderkey AS x, orderkey as y\n" +
+                "  FROM orders\n" +
+                "  WHERE orderkey % 3 = 0\n" +
+                "  UNION ALL\n" +
+                "  SELECT orderkey AS x, orderkey as y\n" +
+                "  FROM orders\n" +
+                "  WHERE orderkey % 2 = 0\n" +
+                ") a\n" +
+                "JOIN (\n" +
+                "  SELECT orderkey AS x, orderkey as y\n" +
+                "  FROM orders\n" +
+                ") b\n" +
+                "ON a.x = b.x");
     }
 
     @Test

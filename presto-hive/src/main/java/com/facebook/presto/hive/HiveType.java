@@ -13,110 +13,109 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.type.BigintType;
 import com.facebook.presto.spi.type.BooleanType;
+import com.facebook.presto.spi.type.DateType;
 import com.facebook.presto.spi.type.DoubleType;
 import com.facebook.presto.spi.type.TimestampType;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.VarbinaryType;
 import com.facebook.presto.spi.type.VarcharType;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 import com.google.common.base.Function;
-import com.google.common.collect.ImmutableBiMap;
+import com.google.common.collect.ImmutableSet;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 
 import javax.annotation.Nullable;
 
-import java.util.Map;
+import java.util.Set;
 
+import static com.facebook.presto.hive.HiveUtil.isArrayType;
+import static com.facebook.presto.hive.HiveUtil.isMapType;
+import static com.facebook.presto.hive.HiveUtil.isStructuralType;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
+import static java.lang.String.format;
 import static org.apache.hadoop.hive.serde.Constants.BIGINT_TYPE_NAME;
 import static org.apache.hadoop.hive.serde.Constants.BINARY_TYPE_NAME;
 import static org.apache.hadoop.hive.serde.Constants.BOOLEAN_TYPE_NAME;
 import static org.apache.hadoop.hive.serde.Constants.DOUBLE_TYPE_NAME;
 import static org.apache.hadoop.hive.serde.Constants.FLOAT_TYPE_NAME;
 import static org.apache.hadoop.hive.serde.Constants.INT_TYPE_NAME;
-import static org.apache.hadoop.hive.serde.Constants.LIST_TYPE_NAME;
-import static org.apache.hadoop.hive.serde.Constants.MAP_TYPE_NAME;
 import static org.apache.hadoop.hive.serde.Constants.SMALLINT_TYPE_NAME;
 import static org.apache.hadoop.hive.serde.Constants.STRING_TYPE_NAME;
-import static org.apache.hadoop.hive.serde.Constants.STRUCT_TYPE_NAME;
 import static org.apache.hadoop.hive.serde.Constants.TIMESTAMP_TYPE_NAME;
 import static org.apache.hadoop.hive.serde.Constants.TINYINT_TYPE_NAME;
-import static org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
+import static org.apache.hadoop.hive.serde.serdeConstants.DATE_TYPE_NAME;
+import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category;
 
-public enum HiveType
+public final class HiveType
 {
-    BOOLEAN(BooleanType.BOOLEAN, BOOLEAN_TYPE_NAME, PrimitiveCategory.BOOLEAN),
-    BYTE(BigintType.BIGINT, TINYINT_TYPE_NAME, PrimitiveCategory.BYTE),
-    SHORT(BigintType.BIGINT, SMALLINT_TYPE_NAME, PrimitiveCategory.SHORT),
-    INT(BigintType.BIGINT, INT_TYPE_NAME, PrimitiveCategory.INT),
-    LONG(BigintType.BIGINT, BIGINT_TYPE_NAME, PrimitiveCategory.LONG),
-    FLOAT(DoubleType.DOUBLE, FLOAT_TYPE_NAME, PrimitiveCategory.FLOAT),
-    DOUBLE(DoubleType.DOUBLE, DOUBLE_TYPE_NAME, PrimitiveCategory.DOUBLE),
-    STRING(VarcharType.VARCHAR, STRING_TYPE_NAME, PrimitiveCategory.STRING),
-    TIMESTAMP(TimestampType.TIMESTAMP, TIMESTAMP_TYPE_NAME, PrimitiveCategory.TIMESTAMP),
-    BINARY(VarbinaryType.VARBINARY, BINARY_TYPE_NAME, PrimitiveCategory.BINARY),
-    LIST(VarcharType.VARCHAR, LIST_TYPE_NAME, null),
-    MAP(VarcharType.VARCHAR, MAP_TYPE_NAME, null),
-    STRUCT(VarcharType.VARCHAR, STRUCT_TYPE_NAME, null);
+    public static final HiveType HIVE_BOOLEAN = new HiveType(BOOLEAN_TYPE_NAME);
+    public static final HiveType HIVE_BYTE = new HiveType(TINYINT_TYPE_NAME);
+    public static final HiveType HIVE_SHORT = new HiveType(SMALLINT_TYPE_NAME);
+    public static final HiveType HIVE_INT = new HiveType(INT_TYPE_NAME);
+    public static final HiveType HIVE_LONG = new HiveType(BIGINT_TYPE_NAME);
+    public static final HiveType HIVE_FLOAT = new HiveType(FLOAT_TYPE_NAME);
+    public static final HiveType HIVE_DOUBLE = new HiveType(DOUBLE_TYPE_NAME);
+    public static final HiveType HIVE_STRING = new HiveType(STRING_TYPE_NAME);
+    public static final HiveType HIVE_TIMESTAMP = new HiveType(TIMESTAMP_TYPE_NAME);
+    public static final HiveType HIVE_DATE = new HiveType(DATE_TYPE_NAME);
+    public static final HiveType HIVE_BINARY = new HiveType(BINARY_TYPE_NAME);
 
-    private final Type nativeType;
+    private static final Set<HiveType> SUPPORTED_HIVE_TYPES = ImmutableSet.of(
+            HIVE_BOOLEAN,
+            HIVE_BYTE,
+            HIVE_SHORT,
+            HIVE_INT,
+            HIVE_LONG,
+            HIVE_FLOAT,
+            HIVE_DOUBLE,
+            HIVE_STRING,
+            HIVE_TIMESTAMP,
+            HIVE_DATE,
+            HIVE_BINARY);
+
     private final String hiveTypeName;
-    @Nullable
-    private final PrimitiveCategory primitiveCategory;
+    private final Category category;
 
-    HiveType(Type nativeType, String hiveTypeName, @Nullable PrimitiveCategory primitiveCategory)
+    private HiveType(String hiveTypeName)
     {
-        this.nativeType = checkNotNull(nativeType, "nativeType is null");
         this.hiveTypeName = checkNotNull(hiveTypeName, "hiveTypeName is null");
-        this.primitiveCategory = primitiveCategory;
+        this.category = TypeInfoUtils.getTypeInfoFromTypeString(hiveTypeName).getCategory();
     }
 
-    private static final Map<String, HiveType> HIVE_TYPE_NAMES;
-    private static final Map<PrimitiveCategory, HiveType> PRIMITIVE_CATEGORIES;
-
-    static {
-        ImmutableBiMap.Builder<String, HiveType> typeMap = ImmutableBiMap.builder();
-        ImmutableBiMap.Builder<PrimitiveCategory, HiveType> categoryMap = ImmutableBiMap.builder();
-        for (HiveType type : values()) {
-            typeMap.put(type.getHiveTypeName(), type);
-            if (type.primitiveCategory != null) {
-                categoryMap.put(type.primitiveCategory, type);
-            }
-        }
-        HIVE_TYPE_NAMES = typeMap.build();
-        PRIMITIVE_CATEGORIES = categoryMap.build();
-    }
-
-    public Type getNativeType()
-    {
-        return nativeType;
-    }
-
+    @JsonValue
     public String getHiveTypeName()
     {
         return hiveTypeName;
     }
 
-    public static HiveType getSupportedHiveType(PrimitiveCategory primitiveCategory)
+    public Category getCategory()
     {
-        HiveType hiveType = PRIMITIVE_CATEGORIES.get(primitiveCategory);
-        checkArgument(hiveType != null, "Unknown primitive Hive category: " + primitiveCategory);
-        return hiveType;
+        return category;
     }
 
     public static HiveType getSupportedHiveType(String hiveTypeName)
     {
-        HiveType hiveType = HIVE_TYPE_NAMES.get(hiveTypeName);
+        HiveType hiveType = getHiveType(hiveTypeName);
         checkArgument(hiveType != null, "Unknown Hive type: " + hiveTypeName);
         return hiveType;
     }
 
+    @JsonCreator
+    @Nullable
     public static HiveType getHiveType(String hiveTypeName)
     {
-        return HIVE_TYPE_NAMES.get(hiveTypeName);
+        HiveType hiveType = new HiveType(hiveTypeName);
+        if (!isStructuralType(hiveType) && !SUPPORTED_HIVE_TYPES.contains(hiveType)) {
+            return null;
+        }
+        return hiveType;
     }
 
     public static HiveType getSupportedHiveType(ObjectInspector fieldInspector)
@@ -128,35 +127,42 @@ public enum HiveType
 
     public static HiveType getHiveType(ObjectInspector fieldInspector)
     {
-        switch (fieldInspector.getCategory()) {
-            case PRIMITIVE:
-                return PRIMITIVE_CATEGORIES.get(((PrimitiveObjectInspector) fieldInspector).getPrimitiveCategory());
-            case MAP:
-                return MAP;
-            case LIST:
-                return LIST;
-            case STRUCT:
-                return STRUCT;
-            default:
-                return null;
-        }
+        return getHiveType(fieldInspector.getTypeName());
     }
 
     public static HiveType toHiveType(Type type)
     {
         if (BooleanType.BOOLEAN.equals(type)) {
-            return BOOLEAN;
+            return HIVE_BOOLEAN;
         }
         if (BigintType.BIGINT.equals(type)) {
-            return LONG;
+            return HIVE_LONG;
         }
         if (DoubleType.DOUBLE.equals(type)) {
-            return DOUBLE;
+            return HIVE_DOUBLE;
         }
         if (VarcharType.VARCHAR.equals(type)) {
-            return STRING;
+            return HIVE_STRING;
         }
-        throw new IllegalArgumentException("unsupported type: " + type);
+        if (VarbinaryType.VARBINARY.equals(type)) {
+            return HIVE_BINARY;
+        }
+        if (DateType.DATE.equals(type)) {
+            return HIVE_DATE;
+        }
+        if (TimestampType.TIMESTAMP.equals(type)) {
+            return HIVE_TIMESTAMP;
+        }
+        if (isArrayType(type)) {
+            HiveType hiveElementType = toHiveType(type.getTypeParameters().get(0));
+            return new HiveType(format("array<%s>", hiveElementType.getHiveTypeName()));
+        }
+        if (isMapType(type)) {
+            HiveType hiveKeyType = toHiveType(type.getTypeParameters().get(0));
+            HiveType hiveValueType = toHiveType(type.getTypeParameters().get(1));
+            return new HiveType(format("map<%s,%s>", hiveKeyType.getHiveTypeName(), hiveValueType.getHiveTypeName()));
+        }
+        throw new PrestoException(NOT_SUPPORTED, "unsupported type: " + type);
     }
 
     public static Function<Type, HiveType> columnTypeToHiveType()
@@ -181,5 +187,36 @@ public enum HiveType
                 return type.getHiveTypeName();
             }
         };
+    }
+
+    @Override
+    public boolean equals(Object o)
+    {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+
+        HiveType hiveType = (HiveType) o;
+
+        if (!hiveTypeName.equals(hiveType.hiveTypeName)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    @Override
+    public int hashCode()
+    {
+        return hiveTypeName.hashCode();
+    }
+
+    @Override
+    public String toString()
+    {
+        return hiveTypeName;
     }
 }

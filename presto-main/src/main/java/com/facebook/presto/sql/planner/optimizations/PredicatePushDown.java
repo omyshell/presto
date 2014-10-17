@@ -13,12 +13,13 @@
  */
 package com.facebook.presto.sql.planner.optimizations;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.ColumnHandle;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.Partition;
 import com.facebook.presto.metadata.PartitionResult;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.TupleDomain;
+import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.split.SplitManager;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.DependencyExtractor;
@@ -49,6 +50,7 @@ import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.planner.plan.SortNode;
 import com.facebook.presto.sql.planner.plan.TableScanNode;
 import com.facebook.presto.sql.planner.plan.UnionNode;
+import com.facebook.presto.sql.planner.plan.UnnestNode;
 import com.facebook.presto.sql.tree.BooleanLiteral;
 import com.facebook.presto.sql.tree.ComparisonExpression;
 import com.facebook.presto.sql.tree.Expression;
@@ -56,7 +58,6 @@ import com.facebook.presto.sql.tree.ExpressionTreeRewriter;
 import com.facebook.presto.sql.tree.LongLiteral;
 import com.facebook.presto.sql.tree.NullLiteral;
 import com.facebook.presto.sql.tree.QualifiedNameReference;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.util.IterableTransformer;
 import com.google.common.base.Function;
 import com.google.common.base.Optional;
@@ -122,7 +123,7 @@ public class PredicatePushDown
     }
 
     @Override
-    public PlanNode optimize(PlanNode plan, ConnectorSession session, Map<Symbol, Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
+    public PlanNode optimize(PlanNode plan, Session session, Map<Symbol, Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
     {
         checkNotNull(plan, "plan is null");
         checkNotNull(session, "session is null");
@@ -140,7 +141,7 @@ public class PredicatePushDown
         private final Metadata metadata;
         private final SqlParser sqlParser;
         private final SplitManager splitManager;
-        private final ConnectorSession session;
+        private final Session session;
         private final boolean experimentalSyntaxEnabled;
 
         private Rewriter(
@@ -149,7 +150,7 @@ public class PredicatePushDown
                 Metadata metadata,
                 SqlParser sqlParser,
                 SplitManager splitManager,
-                ConnectorSession session,
+                Session session,
                 boolean experimentalSyntaxEnabled)
         {
             this.symbolAllocator = checkNotNull(symbolAllocator, "symbolAllocator is null");
@@ -755,6 +756,47 @@ public class PredicatePushDown
             }
             if (!postAggregationConjuncts.isEmpty()) {
                 output = new FilterNode(idAllocator.getNextId(), output, combineConjuncts(postAggregationConjuncts));
+            }
+            return output;
+        }
+
+        @Override
+        public PlanNode rewriteUnnest(UnnestNode node, Expression inheritedPredicate, PlanRewriter<Expression> planRewriter)
+        {
+            EqualityInference equalityInference = createEqualityInference(inheritedPredicate);
+
+            List<Expression> pushdownConjuncts = new ArrayList<>();
+            List<Expression> postUnnestConjuncts = new ArrayList<>();
+
+            // Strip out non-deterministic conjuncts
+            postUnnestConjuncts.addAll(ImmutableList.copyOf(filter(extractConjuncts(inheritedPredicate), not(deterministic()))));
+            inheritedPredicate = stripNonDeterministicConjuncts(inheritedPredicate);
+
+            // Sort non-equality predicates by those that can be pushed down and those that cannot
+            for (Expression conjunct : EqualityInference.nonInferrableConjuncts(inheritedPredicate)) {
+                Expression rewrittenConjunct = equalityInference.rewriteExpression(conjunct, in(node.getReplicateSymbols()));
+                if (rewrittenConjunct != null) {
+                    pushdownConjuncts.add(rewrittenConjunct);
+                }
+                else {
+                    postUnnestConjuncts.add(conjunct);
+                }
+            }
+
+            // Add the equality predicates back in
+            EqualityInference.EqualityPartition equalityPartition = equalityInference.generateEqualitiesPartitionedBy(in(node.getReplicateSymbols()));
+            pushdownConjuncts.addAll(equalityPartition.getScopeEqualities());
+            postUnnestConjuncts.addAll(equalityPartition.getScopeComplementEqualities());
+            postUnnestConjuncts.addAll(equalityPartition.getScopeStraddlingEqualities());
+
+            PlanNode rewrittenSource = planRewriter.rewrite(node.getSource(), combineConjuncts(pushdownConjuncts));
+
+            PlanNode output = node;
+            if (rewrittenSource != node.getSource()) {
+                output = new UnnestNode(node.getId(), rewrittenSource, node.getReplicateSymbols(), node.getUnnestSymbols());
+            }
+            if (!postUnnestConjuncts.isEmpty()) {
+                output = new FilterNode(idAllocator.getNextId(), output, combineConjuncts(postUnnestConjuncts));
             }
             return output;
         }

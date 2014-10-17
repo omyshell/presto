@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -93,7 +95,7 @@ public class FilterAndProjectOperator
     public final Page getOutput()
     {
         if (!pageBuilder.isFull() && currentPage != null) {
-            currentPosition = processor.process(operatorContext.getSession(), currentPage, currentPosition, currentPage.getPositionCount(), pageBuilder);
+            currentPosition = processor.process(operatorContext.getSession().toConnectorSession(), currentPage, currentPosition, currentPage.getPositionCount(), pageBuilder);
             if (currentPosition == currentPage.getPositionCount()) {
                 currentPage = null;
                 currentPosition = 0;

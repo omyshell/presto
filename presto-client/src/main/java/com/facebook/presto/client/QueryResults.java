@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.client;
 
+import com.facebook.presto.spi.type.TypeSignature;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Objects;
@@ -25,8 +26,12 @@ import javax.validation.constraints.NotNull;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
+import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.collect.Iterables.unmodifiableIterable;
@@ -175,8 +180,28 @@ public class QueryResults
         if (value == null) {
             return null;
         }
+        TypeSignature signature = parseTypeSignature(type);
+        if (signature.getBase().equals("array")) {
+            List<Object> fixedValue = new ArrayList<>();
+            for (Object object : List.class.cast(value)) {
+                fixedValue.add(fixValue(signature.getParameters().get(0).toString(), object));
+            }
+            return fixedValue;
+        }
+        if (signature.getBase().equals("map")) {
+            String keyType = signature.getParameters().get(0).toString();
+            String valueType = signature.getParameters().get(1).toString();
+            Map<Object, Object> fixedValue = new HashMap<>();
+            for (Map.Entry<?, ?> entry : (Set<Map.Entry<?, ?>>) Map.class.cast(value).entrySet()) {
+                fixedValue.put(fixValue(keyType, entry.getKey()), fixValue(valueType, entry.getValue()));
+            }
+            return fixedValue;
+        }
         switch (type) {
             case "bigint":
+                if (value instanceof String) {
+                    return Long.parseLong((String) value);
+                }
                 return ((Number) value).longValue();
             case "double":
                 if (value instanceof String) {
@@ -184,8 +209,12 @@ public class QueryResults
                 }
                 return ((Number) value).doubleValue();
             case "boolean":
+                if (value instanceof String) {
+                    return Boolean.parseBoolean((String) value);
+                }
                 return Boolean.class.cast(value);
             case "varchar":
+            case "json":
             case "time":
             case "time with time zone":
             case "timestamp":

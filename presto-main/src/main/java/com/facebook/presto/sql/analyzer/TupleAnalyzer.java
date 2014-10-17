@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.analyzer;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.ColumnHandle;
 import com.facebook.presto.metadata.FunctionInfo;
 import com.facebook.presto.metadata.Metadata;
@@ -22,8 +23,9 @@ import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.metadata.TableMetadata;
 import com.facebook.presto.metadata.ViewDefinition;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.type.TypeSignature;
 import com.facebook.presto.sql.ExpressionUtils;
 import com.facebook.presto.sql.parser.ParsingException;
 import com.facebook.presto.sql.parser.SqlParser;
@@ -61,8 +63,11 @@ import com.facebook.presto.sql.tree.Statement;
 import com.facebook.presto.sql.tree.Table;
 import com.facebook.presto.sql.tree.TableSubquery;
 import com.facebook.presto.sql.tree.Union;
+import com.facebook.presto.sql.tree.Unnest;
 import com.facebook.presto.sql.tree.Values;
 import com.facebook.presto.sql.tree.Window;
+import com.facebook.presto.type.ArrayType;
+import com.facebook.presto.type.MapType;
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
@@ -83,6 +88,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static com.facebook.presto.metadata.ViewDefinition.ViewColumn;
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.sql.analyzer.ExpressionAnalyzer.getExpressionTypes;
 import static com.facebook.presto.sql.analyzer.Field.typeGetter;
@@ -118,12 +124,12 @@ class TupleAnalyzer
         extends DefaultTraversalVisitor<TupleDescriptor, AnalysisContext>
 {
     private final Analysis analysis;
-    private final ConnectorSession session;
+    private final Session session;
     private final Metadata metadata;
     private final SqlParser sqlParser;
     private final boolean experimentalSyntaxEnabled;
 
-    public TupleAnalyzer(Analysis analysis, ConnectorSession session, Metadata metadata, SqlParser sqlParser, boolean experimentalSyntaxEnabled)
+    public TupleAnalyzer(Analysis analysis, Session session, Metadata metadata, SqlParser sqlParser, boolean experimentalSyntaxEnabled)
     {
         checkNotNull(analysis, "analysis is null");
         checkNotNull(session, "session is null");
@@ -134,6 +140,36 @@ class TupleAnalyzer
         this.metadata = metadata;
         this.sqlParser = sqlParser;
         this.experimentalSyntaxEnabled = experimentalSyntaxEnabled;
+    }
+
+    @Override
+    protected TupleDescriptor visitUnnest(Unnest node, AnalysisContext context)
+    {
+        ImmutableList.Builder<Field> outputFields = ImmutableList.builder();
+        for (Expression expression : node.getExpressions()) {
+            ExpressionAnalysis expressionAnalysis = ExpressionAnalyzer.analyzeExpression(session,
+                    metadata,
+                    sqlParser,
+                    context.getLateralTupleDescriptor(),
+                    analysis,
+                    experimentalSyntaxEnabled,
+                    context,
+                    expression);
+            Type expressionType = expressionAnalysis.getType(expression);
+            if (expressionType instanceof ArrayType) {
+                outputFields.add(Field.newUnqualified(Optional.<String>absent(), ((ArrayType) expressionType).getElementType()));
+            }
+            else if (expressionType instanceof MapType) {
+                outputFields.add(Field.newUnqualified(Optional.<String>absent(), ((MapType) expressionType).getKeyType()));
+                outputFields.add(Field.newUnqualified(Optional.<String>absent(), ((MapType) expressionType).getValueType()));
+            }
+            else {
+                throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Cannot unnest type: " + expressionType);
+            }
+        }
+        TupleDescriptor descriptor = new TupleDescriptor(outputFields.build());
+        analysis.setOutputDescriptor(node, descriptor);
+        return descriptor;
     }
 
     @Override
@@ -365,8 +401,10 @@ class TupleAnalyzer
             throw new SemanticException(NOT_SUPPORTED, node, "Natural join not supported");
         }
 
+        AnalysisContext leftContext = new AnalysisContext(context);
         TupleDescriptor left = process(node.getLeft(), context);
-        TupleDescriptor right = process(node.getRight(), context);
+        leftContext.setLateralTupleDescriptor(left);
+        TupleDescriptor right = process(node.getRight(), leftContext);
 
         // todo this check should be inside of TupleDescriptor.join and then remove the public getRelationAlias method, but the exception needs the node object
         Sets.SetView<QualifiedName> duplicateAliases = Sets.intersection(left.getRelationAliases(), right.getRelationAliases());
@@ -376,7 +414,7 @@ class TupleAnalyzer
 
         TupleDescriptor output = left.joinWith(right);
 
-        if (node.getType() == Join.Type.CROSS) {
+        if (node.getType() == Join.Type.CROSS || node.getType() == Join.Type.IMPLICIT) {
             analysis.setOutputDescriptor(node, output);
             return output;
         }
@@ -594,12 +632,12 @@ class TupleAnalyzer
                 throw new SemanticException(NOT_SUPPORTED, node, "Window frames not yet supported");
             }
 
-            List<String> argumentTypes = Lists.transform(windowFunction.getArguments(), new Function<Expression, String>()
+            List<TypeSignature> argumentTypes = Lists.transform(windowFunction.getArguments(), new Function<Expression, TypeSignature>()
             {
                 @Override
-                public String apply(Expression input)
+                public TypeSignature apply(Expression input)
                 {
-                    return analysis.getType(input).getName();
+                    return analysis.getType(input).getTypeSignature();
                 }
             });
 
@@ -744,8 +782,16 @@ class TupleAnalyzer
                     groupByExpression = new FieldOrExpression(expression);
                 }
 
+                Type type;
                 if (groupByExpression.isExpression()) {
                     Analyzer.verifyNoAggregatesOrWindowFunctions(metadata, groupByExpression.getExpression(), "GROUP BY");
+                    type = analysis.getType(groupByExpression.getExpression());
+                }
+                else {
+                    type = tupleDescriptor.getFieldByIndex(groupByExpression.getFieldIndex()).getType();
+                }
+                if (!type.isComparable()) {
+                    throw new SemanticException(TYPE_MISMATCH, node, "%s is not comparable, and therefore cannot be used in GROUP BY", type);
                 }
 
                 groupByExpressionsBuilder.add(groupByExpression);
@@ -870,13 +916,11 @@ class TupleAnalyzer
     {
         TupleDescriptor fromDescriptor = new TupleDescriptor();
 
-        if (node.getFrom() != null && !node.getFrom().isEmpty()) {
+        if (node.getFrom().isPresent()) {
             TupleAnalyzer analyzer = new TupleAnalyzer(analysis, session, metadata, sqlParser, experimentalSyntaxEnabled);
-            if (node.getFrom().size() != 1) {
-                throw new SemanticException(NOT_SUPPORTED, node, "Implicit cross joins are not yet supported; use CROSS JOIN");
-            }
-            fromDescriptor = analyzer.process(Iterables.getOnlyElement(node.getFrom()), context);
+            fromDescriptor = analyzer.process(node.getFrom().get(), context);
         }
+
         return fromDescriptor;
     }
 
@@ -970,16 +1014,18 @@ class TupleAnalyzer
     private TupleDescriptor analyzeView(Query query, QualifiedTableName name, String catalog, String schema, Table node)
     {
         try {
-            ConnectorSession viewSession = new ConnectorSession(
-                    session.getUser(),
-                    session.getSource(),
-                    catalog,
-                    schema,
-                    session.getTimeZoneKey(),
-                    session.getLocale(),
-                    session.getRemoteUserAddress(),
-                    session.getUserAgent(),
-                    session.getStartTime());
+            Session viewSession = Session.builder()
+                    .setUser(session.getUser())
+                    .setSource(session.getSource())
+                    .setCatalog(catalog)
+                    .setSchema(schema)
+                    .setTimeZoneKey(session.getTimeZoneKey())
+                    .setLocale(session.getLocale())
+                    .setRemoteUserAddress(session.getRemoteUserAddress())
+                    .setUserAgent(session.getUserAgent())
+                    .setStartTime(session.getStartTime())
+                    .build();
+
             StatementAnalyzer analyzer = new StatementAnalyzer(analysis, metadata, sqlParser, viewSession, experimentalSyntaxEnabled, Optional.<QueryExplainer>absent());
             return analyzer.process(query, new AnalysisContext());
         }

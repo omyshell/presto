@@ -33,6 +33,7 @@ public class TestVerifierConfig
                 .setTestPassword(null)
                 .setControlPassword(null)
                 .setSuite(null)
+                .setSuites(null)
                 .setSource(null)
                 .setRunId(new DateTime().toString("yyyy-MM-dd"))
                 .setEventClients("human-readable")
@@ -49,6 +50,7 @@ public class TestVerifierConfig
                 .setAlwaysReport(false)
                 .setSuiteRepetitions(1)
                 .setCheckCorrectnessEnabled(true)
+                .setExplainOnly(false)
                 .setSkipCorrectnessRegex("^$")
                 .setQueryRepetitions(1)
                 .setTestCatalogOverride(null)
@@ -67,6 +69,7 @@ public class TestVerifierConfig
     public void testExplicitPropertyMappings()
     {
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
+                .put("suites", "my_suite")
                 .put("suite", "my_suite")
                 .put("source", "my_source")
                 .put("run-id", "my_run_id")
@@ -81,6 +84,7 @@ public class TestVerifierConfig
                 .put("suite-repetitions", "2")
                 .put("query-repetitions", "2")
                 .put("check-correctness", "false")
+                .put("explain-only", "true")
                 .put("skip-correctness-regex", "limit")
                 .put("quiet", "true")
                 .put("event-log-file", "./test")
@@ -103,6 +107,7 @@ public class TestVerifierConfig
                 .build();
 
         VerifierConfig expected = new VerifierConfig().setTestUsername("verifier-test")
+                .setSuites("my_suite")
                 .setSuite("my_suite")
                 .setSource("my_source")
                 .setRunId("my_run_id")
@@ -117,6 +122,7 @@ public class TestVerifierConfig
                 .setSuiteRepetitions(2)
                 .setQueryRepetitions(2)
                 .setCheckCorrectnessEnabled(false)
+                .setExplainOnly(true)
                 .setSkipCorrectnessRegex("limit")
                 .setQuiet(true)
                 .setEventLogFile("./test")

@@ -13,33 +13,21 @@
  */
 package com.facebook.presto.plugin.mysql;
 
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestQueries;
-import com.facebook.presto.tests.DistributedQueryRunner;
-import com.facebook.presto.tpch.TpchPlugin;
-import com.google.common.collect.ImmutableMap;
-import io.airlift.log.Logger;
 import io.airlift.testing.mysql.TestingMySqlServer;
+import io.airlift.tpch.TpchTable;
 import org.testng.annotations.AfterClass;
+import org.testng.annotations.Test;
 
-import java.util.Map;
+import static com.facebook.presto.plugin.mysql.MySqlQueryRunner.createMySqlQueryRunner;
+import static io.airlift.testing.Closeables.closeAllRuntimeException;
 
-import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
-import static com.facebook.presto.tests.QueryAssertions.copyAllTables;
-import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
-import static io.airlift.units.Duration.nanosSince;
-import static java.util.Locale.ENGLISH;
-import static java.util.concurrent.TimeUnit.SECONDS;
-
+@Test
 public class TestMySqlDistributedQueries
         extends AbstractTestQueries
 {
-    private static final Logger log = Logger.get(TestMySqlDistributedQueries.class);
-
     private final TestingMySqlServer mysqlServer;
 
-    @SuppressWarnings("UnusedDeclaration")
     public TestMySqlDistributedQueries()
             throws Exception
     {
@@ -49,57 +37,13 @@ public class TestMySqlDistributedQueries
     public TestMySqlDistributedQueries(TestingMySqlServer mysqlServer)
             throws Exception
     {
-        super(createQueryRunner(mysqlServer));
+        super(createMySqlQueryRunner(mysqlServer, TpchTable.getTables()));
         this.mysqlServer = mysqlServer;
     }
 
     @AfterClass(alwaysRun = true)
-    @SuppressWarnings({"EmptyTryBlock", "UnusedDeclaration"})
-    public void destroy()
+    public final void destroy()
     {
-        try (QueryRunner queryRunner = this.queryRunner;
-                TestingMySqlServer mysqlServer = this.mysqlServer) {
-            // use try-with-resources to close everything safely
-        }
-    }
-
-    private static QueryRunner createQueryRunner(TestingMySqlServer server)
-            throws Exception
-    {
-        try {
-            return doCreateQueryRunner(server);
-        }
-        catch (Exception e) {
-            // use try-with-resources to close everything safely
-            try (TestingMySqlServer ignored = server) {
-                throw e;
-            }
-        }
-    }
-
-    private static QueryRunner doCreateQueryRunner(TestingMySqlServer server)
-            throws Exception
-    {
-        DistributedQueryRunner queryRunner = new DistributedQueryRunner(createSession("tpch"), 3);
-
-        queryRunner.installPlugin(new TpchPlugin());
-        queryRunner.createCatalog("tpch", "tpch");
-
-        Map<String, String> properties = ImmutableMap.of("connection-url", server.getJdbcUrl());
-
-        queryRunner.installPlugin(new MySqlPlugin());
-        queryRunner.createCatalog("mysql", "mysql", properties);
-
-        log.info("Loading data...");
-        long startTime = System.nanoTime();
-        copyAllTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createSession("tpch"));
-        log.info("Loading complete in %s", nanosSince(startTime).toString(SECONDS));
-
-        return queryRunner;
-    }
-
-    private static ConnectorSession createSession(String schema)
-    {
-        return new ConnectorSession("user", "test", "mysql", schema, UTC_KEY, ENGLISH, null, null);
+        closeAllRuntimeException(mysqlServer);
     }
 }

@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.sql.planner.optimizations;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.type.BigintType;
+import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
 import com.facebook.presto.sql.planner.Symbol;
@@ -43,7 +43,7 @@ public class CountConstantOptimizer
         extends PlanOptimizer
 {
     @Override
-    public PlanNode optimize(PlanNode plan, ConnectorSession session, Map<Symbol, Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
+    public PlanNode optimize(PlanNode plan, Session session, Map<Symbol, Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
     {
         checkNotNull(plan, "plan is null");
         checkNotNull(session, "session is null");
@@ -72,7 +72,7 @@ public class CountConstantOptimizer
                     Signature signature = node.getFunctions().get(symbol);
                     if (isCountConstant(projectNode, functionCall, signature)) {
                         aggregations.put(symbol, new FunctionCall(functionCall.getName(), null, functionCall.isDistinct(), ImmutableList.<Expression>of()));
-                        functions.put(symbol, new Signature("count", BigintType.NAME));
+                        functions.put(symbol, new Signature("count", StandardTypes.BIGINT));
                     }
                 }
             }
@@ -92,7 +92,7 @@ public class CountConstantOptimizer
         {
             if (!"count".equals(signature.getName()) ||
                     signature.getArgumentTypes().size() != 1 ||
-                    !signature.getReturnType().equals(BigintType.NAME)) {
+                    !signature.getReturnType().equals(StandardTypes.BIGINT)) {
                 return false;
             }
 

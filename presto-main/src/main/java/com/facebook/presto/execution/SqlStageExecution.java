@@ -16,14 +16,15 @@ package com.facebook.presto.execution;
 import com.facebook.presto.HashPagePartitionFunction;
 import com.facebook.presto.OutputBuffers;
 import com.facebook.presto.PagePartitionFunction;
+import com.facebook.presto.Session;
 import com.facebook.presto.UnpartitionedPagePartitionFunction;
 import com.facebook.presto.execution.NodeScheduler.NodeSelector;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.metadata.Split;
 import com.facebook.presto.operator.TaskStats;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.Node;
 import com.facebook.presto.split.RemoteSplit;
+import com.facebook.presto.split.SplitSource;
 import com.facebook.presto.sql.planner.PlanFragment;
 import com.facebook.presto.sql.planner.PlanFragment.OutputPartitioning;
 import com.facebook.presto.sql.planner.PlanFragment.PlanDistribution;
@@ -36,13 +37,17 @@ import com.facebook.presto.util.IterableTransformer;
 import com.facebook.presto.util.SetThreadName;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
+import com.google.common.base.Functions;
 import com.google.common.base.Objects;
 import com.google.common.base.Optional;
 import com.google.common.base.Throwables;
+import com.google.common.collect.FluentIterable;
+import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import io.airlift.log.Logger;
@@ -106,11 +111,12 @@ public class SqlStageExecution
     private final PlanFragment fragment;
     private final Map<PlanFragmentId, StageExecutionNode> subStages;
 
-    private final ConcurrentMap<Node, RemoteTask> tasks = new ConcurrentHashMap<>();
+    private final Multimap<Node, TaskId> localNodeTaskMap = HashMultimap.create();
+    private final ConcurrentMap<TaskId, RemoteTask> tasks = new ConcurrentHashMap<>();
 
     private final Optional<SplitSource> dataSource;
     private final RemoteTaskFactory remoteTaskFactory;
-    private final ConnectorSession session; // only used for remote task factory
+    private final Session session; // only used for remote task factory
     private final int splitBatchSize;
 
     private final int initialHashPartitions;
@@ -145,7 +151,7 @@ public class SqlStageExecution
             StageExecutionPlan plan,
             NodeScheduler nodeScheduler,
             RemoteTaskFactory remoteTaskFactory,
-            ConnectorSession session,
+            Session session,
             int splitBatchSize,
             int initialHashPartitions,
             ExecutorService executor,
@@ -176,7 +182,7 @@ public class SqlStageExecution
             StageExecutionPlan plan,
             NodeScheduler nodeScheduler,
             RemoteTaskFactory remoteTaskFactory,
-            ConnectorSession session,
+            Session session,
             int splitBatchSize,
             int initialHashPartitions,
             ExecutorService executor,
@@ -235,7 +241,7 @@ public class SqlStageExecution
             this.subStages = subStages.build();
 
             String dataSourceName = dataSource.isPresent() ? dataSource.get().getDataSourceName() : null;
-            this.nodeSelector = nodeScheduler.createNodeSelector(dataSourceName, tasks);
+            this.nodeSelector = nodeScheduler.createNodeSelector(dataSourceName);
             this.nodeTaskMap = nodeTaskMap;
             stageState = new StateMachine<>("stage " + stageId, this.executor, StageState.PLANNED);
             stageState.addStateChangeListener(new StateChangeListener<StageState>()
@@ -273,6 +279,7 @@ public class SqlStageExecution
         }
     }
 
+    @Override
     public StageInfo getStageInfo()
     {
         try (SetThreadName setThreadName = new SetThreadName("Stage-%s", stageId)) {
@@ -382,9 +389,9 @@ public class SqlStageExecution
     }
 
     @Override
-    public synchronized void parentNodesAdded(List<Node> parentNodes, boolean noMoreParentNodes)
+    public synchronized void parentTasksAdded(List<TaskId> parentTasks, boolean noMoreParentNodes)
     {
-        checkNotNull(parentNodes, "parentNodes is null");
+        checkNotNull(parentTasks, "parentTasks is null");
 
         // get the current buffers
         OutputBuffers startingOutputBuffers = nextOutputBuffers != null ? nextOutputBuffers : currentOutputBuffers;
@@ -392,9 +399,9 @@ public class SqlStageExecution
         // add new buffers
         OutputBuffers newOutputBuffers;
         if (fragment.getOutputPartitioning() == OutputPartitioning.NONE) {
-            ImmutableMap.Builder<String, PagePartitionFunction> newBuffers = ImmutableMap.builder();
-            for (Node parentNode : parentNodes) {
-                newBuffers.put(parentNode.getNodeIdentifier(), new UnpartitionedPagePartitionFunction());
+            ImmutableMap.Builder<TaskId, PagePartitionFunction> newBuffers = ImmutableMap.builder();
+            for (TaskId taskId : parentTasks) {
+                newBuffers.put(taskId, new UnpartitionedPagePartitionFunction());
             }
             newOutputBuffers = startingOutputBuffers.withBuffers(newBuffers.build());
 
@@ -406,10 +413,10 @@ public class SqlStageExecution
         else if (fragment.getOutputPartitioning() == OutputPartitioning.HASH) {
             checkArgument(noMoreParentNodes, "Hash partitioned output requires all parent nodes be added in a single call");
 
-            ImmutableMap.Builder<String, PagePartitionFunction> buffers = ImmutableMap.builder();
-            for (int nodeIndex = 0; nodeIndex < parentNodes.size(); nodeIndex++) {
-                Node node = parentNodes.get(nodeIndex);
-                buffers.put(node.getNodeIdentifier(), new HashPagePartitionFunction(nodeIndex, parentNodes.size(), fragment.getPartitioningChannels(), fragment.getTypes()));
+            ImmutableMap.Builder<TaskId, PagePartitionFunction> buffers = ImmutableMap.builder();
+            for (int nodeIndex = 0; nodeIndex < parentTasks.size(); nodeIndex++) {
+                TaskId taskId = parentTasks.get(nodeIndex);
+                buffers.put(taskId, new HashPagePartitionFunction(nodeIndex, parentTasks.size(), fragment.getPartitioningChannels(), fragment.getTypes()));
             }
 
             newOutputBuffers = startingOutputBuffers
@@ -496,9 +503,15 @@ public class SqlStageExecution
     }
 
     @VisibleForTesting
-    public Map<Node, RemoteTask> getTasks()
+    public List<RemoteTask> getAllTasks()
     {
-        return ImmutableMap.copyOf(tasks);
+        return ImmutableList.copyOf(tasks.values());
+    }
+
+    @VisibleForTesting
+    public List<RemoteTask> getTasks(Node node)
+    {
+        return FluentIterable.from(localNodeTaskMap.get(node)).transform(Functions.forMap(tasks)).toList();
     }
 
     public Future<?> start()
@@ -593,14 +606,16 @@ public class SqlStageExecution
         // create tasks on "nodeCount" random nodes
         List<Node> nodes = nodeSelector.selectRandomNodes(nodeCount);
         checkCondition(!nodes.isEmpty(), NO_NODES_AVAILABLE, "No worker nodes available");
+        ImmutableList.Builder<TaskId> tasks = ImmutableList.builder();
         for (int taskId = 0; taskId < nodes.size(); taskId++) {
             Node node = nodes.get(taskId);
-            scheduleTask(taskId, node);
+            RemoteTask task = scheduleTask(taskId, node);
+            tasks.add(task.getTaskInfo().getTaskId());
         }
 
         // tell sub stages about all nodes and that there will not be more nodes
         for (StageExecutionNode subStage : subStages.values()) {
-            subStage.parentNodesAdded(nodes, true);
+            subStage.parentTasksAdded(tasks.build(), true);
         }
     }
 
@@ -608,11 +623,11 @@ public class SqlStageExecution
     {
         // create task on current node
         Node node = nodeSelector.selectCurrentNode();
-        scheduleTask(0, node);
+        RemoteTask task = scheduleTask(0, node);
 
         // tell sub stages about all nodes and that there will not be more nodes
         for (StageExecutionNode subStage : subStages.values()) {
-            subStage.parentNodesAdded(ImmutableList.of(node), true);
+            subStage.parentTasksAdded(ImmutableList.of(task.getTaskInfo().getTaskId()), true);
         }
     }
 
@@ -633,7 +648,7 @@ public class SqlStageExecution
                 getSplitDistribution.add(System.nanoTime() - start);
 
                 while (!pendingSplits.isEmpty() && !getState().isDone()) {
-                    Multimap<Node, Split> splitAssignment = nodeSelector.computeAssignments(pendingSplits);
+                    Multimap<Node, Split> splitAssignment = nodeSelector.computeAssignments(pendingSplits, tasks.values());
                     pendingSplits = ImmutableSet.copyOf(Sets.difference(pendingSplits, ImmutableSet.copyOf(splitAssignment.values())));
 
                     assignSplits(nextTaskId, splitAssignment);
@@ -660,12 +675,13 @@ public class SqlStageExecution
             long scheduleSplitStart = System.nanoTime();
             Node node = taskSplits.getKey();
 
-            RemoteTask task = tasks.get(node);
+            TaskId taskId = Iterables.getOnlyElement(localNodeTaskMap.get(node), null);
+            RemoteTask task = taskId != null ? tasks.get(taskId) : null;
             if (task == null) {
-                scheduleTask(nextTaskId.getAndIncrement(), node, fragment.getPartitionedSource(), taskSplits.getValue());
+                RemoteTask remoteTask = scheduleTask(nextTaskId.getAndIncrement(), node, fragment.getPartitionedSource(), taskSplits.getValue());
 
                 // tell the sub stages to create a buffer for this task
-                addStageNode(node);
+                addStageNode(remoteTask.getTaskInfo().getTaskId());
 
                 scheduleTaskDistribution.add(System.nanoTime() - scheduleSplitStart);
             }
@@ -683,7 +699,7 @@ public class SqlStageExecution
             // before we block, we need to create all possible output buffers on the sub stages, or they can deadlock
             // waiting for the "noMoreBuffers" call
             nodeSelector.lockDownNodes();
-            for (Node node : Sets.difference(new HashSet<>(nodeSelector.allNodes()), tasks.keySet())) {
+            for (Node node : Sets.difference(new HashSet<>(nodeSelector.allNodes()), localNodeTaskMap.keySet())) {
                 scheduleTask(nextTaskId.getAndIncrement(), node);
             }
             // tell sub stages there will be no more output buffers
@@ -704,17 +720,17 @@ public class SqlStageExecution
         updateNewExchangesAndBuffers(false);
     }
 
-    private void addStageNode(Node node)
+    private void addStageNode(TaskId task)
     {
         for (StageExecutionNode subStage : subStages.values()) {
-            subStage.parentNodesAdded(ImmutableList.of(node), false);
+            subStage.parentTasksAdded(ImmutableList.of(task), false);
         }
     }
 
     private void setNoMoreStageNodes()
     {
         for (StageExecutionNode subStage : subStages.values()) {
-            subStage.parentNodesAdded(ImmutableList.<Node>of(), true);
+            subStage.parentTasksAdded(ImmutableList.<TaskId>of(), true);
         }
     }
 
@@ -735,7 +751,7 @@ public class SqlStageExecution
             initialSplits.put(sourceId, sourceSplit);
         }
         for (Entry<PlanNodeId, URI> entry : exchangeLocations.get().entries()) {
-            initialSplits.put(entry.getKey(), createRemoteSplitFor(node.getNodeIdentifier(), entry.getValue()));
+            initialSplits.put(entry.getKey(), createRemoteSplitFor(taskId, entry.getValue()));
         }
 
         RemoteTask task = remoteTaskFactory.createRemoteTask(session,
@@ -758,7 +774,8 @@ public class SqlStageExecution
         task.start();
 
         // record this task
-        tasks.put(node, task);
+        tasks.put(task.getTaskInfo().getTaskId(), task);
+        localNodeTaskMap.put(node, task.getTaskInfo().getTaskId());
         nodeTaskMap.addTask(node, task);
 
         // update in case task finished before listener was registered
@@ -807,7 +824,7 @@ public class SqlStageExecution
         // update tasks
         for (RemoteTask task : tasks.values()) {
             for (Entry<PlanNodeId, URI> entry : newExchangeLocations.entries()) {
-                Split remoteSplit = createRemoteSplitFor(task.getNodeId(), entry.getValue());
+                Split remoteSplit = createRemoteSplitFor(task.getTaskInfo().getTaskId(), entry.getValue());
                 task.addSplits(entry.getKey(), ImmutableList.of(remoteSplit));
             }
             task.setOutputBuffers(outputBuffers);
@@ -915,6 +932,7 @@ public class SqlStageExecution
         }
     }
 
+    @Override
     public void cancel(boolean force)
     {
         checkState(!Thread.holdsLock(this), "Can not cancel while holding a lock on this");
@@ -956,9 +974,9 @@ public class SqlStageExecution
         }
     }
 
-    private Split createRemoteSplitFor(String nodeId, URI taskLocation)
+    private Split createRemoteSplitFor(TaskId taskId, URI taskLocation)
     {
-        URI splitLocation = uriBuilderFrom(taskLocation).appendPath("results").appendPath(nodeId).build();
+        URI splitLocation = uriBuilderFrom(taskLocation).appendPath("results").appendPath(taskId.toString()).build();
         return new Split("remote", new RemoteSplit(splitLocation));
     }
 
@@ -1011,7 +1029,7 @@ interface StageExecutionNode
 
     Future<?> scheduleStartTasks();
 
-    void parentNodesAdded(List<Node> parentNode, boolean noMoreParentNodes);
+    void parentTasksAdded(List<TaskId> parentTasks, boolean noMoreParentNodes);
 
     Iterable<? extends URI> getTaskLocations();
 

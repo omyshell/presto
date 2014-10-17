@@ -18,7 +18,7 @@ import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.execution.TaskInfo;
 import com.facebook.presto.execution.TaskManager;
 import com.facebook.presto.execution.TaskState;
-import com.facebook.presto.operator.Page;
+import com.facebook.presto.spi.Page;
 import com.facebook.presto.util.MoreFutures;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
@@ -59,6 +59,7 @@ import static com.facebook.presto.client.PrestoHeaders.PRESTO_PAGE_TOKEN;
 import static com.facebook.presto.execution.TaskInfo.summarizeTaskInfo;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.collect.Iterables.transform;
+import static io.airlift.http.server.AsyncResponseHandler.bindAsyncResponse;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
@@ -155,7 +156,8 @@ public class TaskResource
 
         // For hard timeout, add an additional 5 seconds to max wait for thread scheduling contention and GC
         Duration timeout = new Duration(maxWait.toMillis() + 5000, MILLISECONDS);
-        AsyncResponseUtils.registerAsyncResponse(asyncResponse, futureTaskInfo, timeout, executor);
+        bindAsyncResponse(asyncResponse, futureTaskInfo, executor)
+                .withTimeout(timeout);
     }
 
     @DELETE
@@ -175,8 +177,8 @@ public class TaskResource
     @GET
     @Path("{taskId}/results/{outputId}/{token}")
     @Produces(PRESTO_PAGES)
-    public void getResults(@PathParam("taskId") final TaskId taskId,
-            @PathParam("outputId") String outputId,
+    public void getResults(@PathParam("taskId") TaskId taskId,
+            @PathParam("outputId") TaskId outputId,
             @PathParam("token") final long token,
             @Suspended AsyncResponse asyncResponse)
             throws InterruptedException
@@ -228,21 +230,18 @@ public class TaskResource
 
         // For hard timeout, add an additional 5 seconds to max wait for thread scheduling contention and GC
         Duration timeout = new Duration(DEFAULT_MAX_WAIT_TIME.toMillis() + 5000, MILLISECONDS);
-        AsyncResponseUtils.registerAsyncResponse(
-                asyncResponse,
-                responseFuture,
-                timeout,
-                executor,
-                Response.status(Status.NO_CONTENT)
-                        .header(PRESTO_PAGE_TOKEN, token)
-                        .header(PRESTO_PAGE_NEXT_TOKEN, token)
-                        .build());
+        bindAsyncResponse(asyncResponse, responseFuture, executor)
+                .withTimeout(timeout,
+                        Response.status(Status.NO_CONTENT)
+                                .header(PRESTO_PAGE_TOKEN, token)
+                                .header(PRESTO_PAGE_NEXT_TOKEN, token)
+                                .build());
     }
 
     @DELETE
     @Path("{taskId}/results/{outputId}")
     @Produces(MediaType.APPLICATION_JSON)
-    public Response abortResults(@PathParam("taskId") TaskId taskId, @PathParam("outputId") String outputId, @Context UriInfo uriInfo)
+    public Response abortResults(@PathParam("taskId") TaskId taskId, @PathParam("outputId") TaskId outputId, @Context UriInfo uriInfo)
     {
         checkNotNull(taskId, "taskId is null");
         checkNotNull(outputId, "outputId is null");

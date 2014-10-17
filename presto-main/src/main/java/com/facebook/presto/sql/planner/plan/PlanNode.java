@@ -35,7 +35,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
         @JsonSubTypes.Type(value = MarkDistinctNode.class, name = "markDistinct"),
         @JsonSubTypes.Type(value = FilterNode.class, name = "filter"),
         @JsonSubTypes.Type(value = WindowNode.class, name = "window"),
-        @JsonSubTypes.Type(value = RowNumberLimitNode.class, name = "rowNumberLimit"),
+        @JsonSubTypes.Type(value = RowNumberNode.class, name = "rowNumber"),
         @JsonSubTypes.Type(value = TopNRowNumberNode.class, name = "topnRowNumber"),
         @JsonSubTypes.Type(value = LimitNode.class, name = "limit"),
         @JsonSubTypes.Type(value = DistinctLimitNode.class, name = "distinctlimit"),
@@ -50,6 +50,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
         @JsonSubTypes.Type(value = IndexSourceNode.class, name = "indexsource"),
         @JsonSubTypes.Type(value = TableWriterNode.class, name = "tablewriter"),
         @JsonSubTypes.Type(value = TableCommitNode.class, name = "tablecommit"),
+        @JsonSubTypes.Type(value = UnnestNode.class, name = "unnest"),
 })
 public abstract class PlanNode
 {

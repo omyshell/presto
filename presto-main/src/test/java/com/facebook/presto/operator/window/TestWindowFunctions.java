@@ -13,7 +13,6 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.tpch.TpchConnectorFactory;
@@ -21,23 +20,20 @@ import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.operator.window.WindowAssertions.assertWindowQuery;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
-import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
-import static java.util.Locale.ENGLISH;
 
 public class TestWindowFunctions
 {
-    private static final ConnectorSession SESSION = new ConnectorSession("user", "test", "tpch", TINY_SCHEMA_NAME, UTC_KEY, ENGLISH, null, null);
     private final LocalQueryRunner queryRunner;
 
     public TestWindowFunctions()
     {
-        queryRunner = new LocalQueryRunner(SESSION);
+        queryRunner = new LocalQueryRunner(TEST_SESSION);
         queryRunner.createCatalog("tpch", new TpchConnectorFactory(queryRunner.getNodeManager(), 1), ImmutableMap.<String, String>of());
     }
 
@@ -50,7 +46,7 @@ public class TestWindowFunctions
     @Test
     public void testRowNumber()
     {
-        MaterializedResult expected = resultBuilder(SESSION, BIGINT, VARCHAR, BIGINT)
+        MaterializedResult expected = resultBuilder(TEST_SESSION, BIGINT, VARCHAR, BIGINT)
                 .row(1, "O", 1)
                 .row(2, "O", 2)
                 .row(3, "F", 3)
@@ -68,45 +64,10 @@ public class TestWindowFunctions
     }
 
     @Test
-    public void testRowNumberPartitioning()
-    {
-        assertWindowQuery("row_number() OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, BIGINT)
-                        .row(3, "F", 1)
-                        .row(5, "F", 2)
-                        .row(6, "F", 3)
-                        .row(33, "F", 4)
-                        .row(1, "O", 1)
-                        .row(2, "O", 2)
-                        .row(4, "O", 3)
-                        .row(7, "O", 4)
-                        .row(32, "O", 5)
-                        .row(34, "O", 6)
-                        .build(), queryRunner
-        );
-
-        // TODO: add better test for non-deterministic sorting behavior
-        assertWindowQuery("row_number() OVER (PARTITION BY orderstatus)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, BIGINT)
-                        .row(3, "F", 1)
-                        .row(5, "F", 2)
-                        .row(33, "F", 3)
-                        .row(6, "F", 4)
-                        .row(32, "O", 1)
-                        .row(34, "O", 2)
-                        .row(1, "O", 3)
-                        .row(2, "O", 4)
-                        .row(4, "O", 5)
-                        .row(7, "O", 6)
-                        .build(), queryRunner
-        );
-    }
-
-    @Test
     public void testRank()
     {
         assertWindowQuery("rank() OVER (ORDER BY orderstatus)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, BIGINT)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, BIGINT)
                         .row(3, "F", 1)
                         .row(5, "F", 1)
                         .row(6, "F", 1)
@@ -125,7 +86,7 @@ public class TestWindowFunctions
     public void testDenseRank()
     {
         assertWindowQuery("dense_rank() OVER (ORDER BY orderstatus)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, BIGINT)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, BIGINT)
                         .row(3, "F", 1)
                         .row(5, "F", 1)
                         .row(6, "F", 1)
@@ -144,7 +105,7 @@ public class TestWindowFunctions
     public void testPercentRank()
     {
         assertWindowQuery("percent_rank() OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, DOUBLE)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, DOUBLE)
                         .row(3, "F", 0.0)
                         .row(5, "F", 1 / 3.0)
                         .row(6, "F", 2 / 3.0)
@@ -159,7 +120,7 @@ public class TestWindowFunctions
         );
 
         assertWindowQuery("percent_rank() OVER (ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, DOUBLE)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, DOUBLE)
                         .row(1, "O", 0.0)
                         .row(2, "O", 1 / 9.0)
                         .row(3, "F", 2 / 9.0)
@@ -174,7 +135,7 @@ public class TestWindowFunctions
         );
 
         assertWindowQuery("percent_rank() OVER (ORDER BY orderstatus)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, DOUBLE)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, DOUBLE)
                         .row(3, "F", 0.0)
                         .row(5, "F", 0.0)
                         .row(6, "F", 0.0)
@@ -189,7 +150,7 @@ public class TestWindowFunctions
         );
 
         assertWindowQuery("percent_rank() OVER (PARTITION BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, DOUBLE)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, DOUBLE)
                         .row(1, "O", 0.0)
                         .row(2, "O", 0.0)
                         .row(3, "F", 0.0)
@@ -208,7 +169,7 @@ public class TestWindowFunctions
     public void testCumulativeDistribution()
     {
         assertWindowQuery("cume_dist() OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, DOUBLE)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, DOUBLE)
                         .row(3, "F", 0.25)
                         .row(5, "F", 0.5)
                         .row(6, "F", 0.75)
@@ -223,7 +184,7 @@ public class TestWindowFunctions
         );
 
         assertWindowQuery("cume_dist() OVER (ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, DOUBLE)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, DOUBLE)
                         .row(1, "O", 0.1)
                         .row(2, "O", 0.2)
                         .row(3, "F", 0.3)
@@ -238,7 +199,7 @@ public class TestWindowFunctions
         );
 
         assertWindowQuery("cume_dist() OVER (ORDER BY orderstatus)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, DOUBLE)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, DOUBLE)
                         .row(3, "F", 0.4)
                         .row(5, "F", 0.4)
                         .row(6, "F", 0.4)
@@ -253,7 +214,7 @@ public class TestWindowFunctions
         );
 
         assertWindowQuery("cume_dist() OVER (PARTITION BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, DOUBLE)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, DOUBLE)
                         .row(1, "O", 1.0)
                         .row(2, "O", 1.0)
                         .row(3, "F", 1.0)
@@ -272,7 +233,7 @@ public class TestWindowFunctions
     public void testFirstValue()
     {
         assertWindowQuery("first_value(orderdate) OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, VARCHAR)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, VARCHAR)
                         .row(3, "F", "1993-10-14")
                         .row(5, "F", "1993-10-14")
                         .row(6, "F", "1993-10-14")
@@ -286,7 +247,7 @@ public class TestWindowFunctions
                         .build(), queryRunner);
 
         assertWindowQuery("first_value(orderkey) OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, BIGINT)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, BIGINT)
                         .row(3, "F", 3)
                         .row(5, "F", 3)
                         .row(6, "F", 3)
@@ -305,7 +266,7 @@ public class TestWindowFunctions
     public void testLastValue()
     {
         assertWindowQuery("last_value(orderdate) OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, VARCHAR)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, VARCHAR)
                         .row(3, "F", "1993-10-27")
                         .row(5, "F", "1993-10-27")
                         .row(6, "F", "1993-10-27")
@@ -319,7 +280,7 @@ public class TestWindowFunctions
                         .build(), queryRunner);
 
         assertWindowQuery("last_value(orderkey) OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, BIGINT)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, BIGINT)
                         .row(3, "F", 33)
                         .row(5, "F", 33)
                         .row(6, "F", 33)
@@ -338,7 +299,7 @@ public class TestWindowFunctions
     public void testLagFunction()
     {
         assertWindowQuery("lag(orderdate) OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, VARCHAR)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, VARCHAR)
                         .row(3, "F", null)
                         .row(5, "F", "1993-10-14")
                         .row(6, "F", "1994-07-30")
@@ -352,7 +313,7 @@ public class TestWindowFunctions
                         .build(), queryRunner);
 
         assertWindowQuery("lag(orderdate, 2, '1977-01-01') OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, VARCHAR)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, VARCHAR)
                         .row(3, "F", "1977-01-01")
                         .row(5, "F", "1977-01-01")
                         .row(6, "F", "1993-10-14")
@@ -371,7 +332,7 @@ public class TestWindowFunctions
     public void testLeadFunction()
     {
         assertWindowQuery("lead(orderdate) OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, VARCHAR)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, VARCHAR)
                         .row(3, "F", "1994-07-30")
                         .row(5, "F", "1992-02-21")
                         .row(6, "F", "1993-10-27")
@@ -385,7 +346,7 @@ public class TestWindowFunctions
                         .build(), queryRunner);
 
         assertWindowQuery("lead(orderdate, 2, '1977-01-01') OVER (PARTITION BY orderstatus ORDER BY orderkey)",
-                resultBuilder(SESSION, BIGINT, VARCHAR, VARCHAR)
+                resultBuilder(TEST_SESSION, BIGINT, VARCHAR, VARCHAR)
                         .row(3, "F", "1992-02-21")
                         .row(5, "F", "1993-10-27")
                         .row(6, "F", "1977-01-01")

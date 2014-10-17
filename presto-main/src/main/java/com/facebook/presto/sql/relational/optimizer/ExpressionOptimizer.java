@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.relational.optimizer;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.FunctionInfo;
 import com.facebook.presto.metadata.FunctionRegistry;
 import com.facebook.presto.metadata.Signature;
@@ -25,10 +26,10 @@ import com.facebook.presto.sql.relational.RowExpression;
 import com.facebook.presto.sql.relational.RowExpressionVisitor;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.type.UnknownType;
+import com.facebook.presto.util.IterableTransformer;
 import com.google.common.base.Function;
 import com.google.common.base.Throwables;
 import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
 
 import java.lang.invoke.MethodHandle;
 import java.util.ArrayList;
@@ -53,11 +54,11 @@ public class ExpressionOptimizer
     private final TypeManager typeManager;
     private final ConnectorSession session;
 
-    public ExpressionOptimizer(FunctionRegistry registry, TypeManager typeManager, ConnectorSession session)
+    public ExpressionOptimizer(FunctionRegistry registry, TypeManager typeManager, Session session)
     {
         this.registry = registry;
         this.typeManager = typeManager;
-        this.session = session;
+        this.session = session.toConnectorSession();
     }
 
     public RowExpression optimize(RowExpression expression)
@@ -85,41 +86,45 @@ public class ExpressionOptimizer
         {
             FunctionInfo function;
             Signature signature = call.getSignature();
-            switch (signature.getName()) {
-                // TODO: optimize these special forms
-                case IF:
-                case NULL_IF:
-                case SWITCH:
-                case TRY_CAST:
-                case IS_NULL:
-                case "IS_DISTINCT_FROM":
-                case COALESCE:
-                case "AND":
-                case "OR":
-                case IN:
-                    return call;
-                case CAST:
-                    if (call.getArguments().get(0).getType().equals(UnknownType.UNKNOWN)) {
-                        return constantNull(call.getType());
-                    }
-                    function = registry.getCoercion(call.getArguments().get(0).getType(), call.getType());
-                    break;
-                default:
-                    function = registry.getExactFunction(signature);
-                    if (function == null) {
-                        // TODO: temporary hack to deal with magic timestamp literal functions which don't have an "exact" form and need to be "resolved"
-                        function = registry.resolveFunction(QualifiedName.of(signature.getName()), signature.getArgumentTypes(), false);
-                    }
+
+            if (signature.getName().equals(CAST)) {
+                if (call.getArguments().get(0).getType().equals(UnknownType.UNKNOWN)) {
+                    return constantNull(call.getType());
+                }
+                function = registry.getCoercion(call.getArguments().get(0).getType(), call.getType());
+            }
+            else {
+                switch (signature.getName()) {
+                    // TODO: optimize these special forms
+                    case IF:
+                    case NULL_IF:
+                    case SWITCH:
+                    case TRY_CAST:
+                    case IS_NULL:
+                    case "IS_DISTINCT_FROM":
+                    case COALESCE:
+                    case "AND":
+                    case "OR":
+                    case IN:
+                        return call;
+                    default:
+                        function = registry.getExactFunction(signature);
+                        if (function == null) {
+                            // TODO: temporary hack to deal with magic timestamp literal functions which don't have an "exact" form and need to be "resolved"
+                            function = registry.resolveFunction(QualifiedName.of(signature.getName()), signature.getArgumentTypes(), false);
+                        }
+                }
             }
 
-            List<RowExpression> arguments = Lists.transform(call.getArguments(), new Function<RowExpression, RowExpression>()
-            {
-                @Override
-                public RowExpression apply(RowExpression input)
-                {
-                    return input.accept(Visitor.this, context);
-                }
-            });
+            List<RowExpression> arguments = IterableTransformer.on(call.getArguments())
+                    .transform(new Function<RowExpression, RowExpression>()
+                    {
+                        @Override
+                        public RowExpression apply(RowExpression input)
+                        {
+                            return input.accept(Visitor.this, context);
+                        }
+                    }).list();
 
             if (Iterables.all(arguments, instanceOf(ConstantExpression.class)) && function.isDeterministic()) {
                 MethodHandle method = function.getMethodHandle();

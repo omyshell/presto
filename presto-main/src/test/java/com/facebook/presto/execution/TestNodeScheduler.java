@@ -73,7 +73,7 @@ public class TestNodeScheduler
         NodeScheduler nodeScheduler = new NodeScheduler(nodeManager, nodeSchedulerConfig, nodeTaskMap);
         // contents of taskMap indicate the node-task map for the current stage
         taskMap = new HashMap<>();
-        nodeSelector = nodeScheduler.createNodeSelector("foo", taskMap);
+        nodeSelector = nodeScheduler.createNodeSelector("foo");
         remoteTaskExecutor = Executors.newCachedThreadPool(daemonThreadsNamed("remoteTaskExecutor"));
     }
 
@@ -91,10 +91,38 @@ public class TestNodeScheduler
         Set<Split> splits = new HashSet<>();
         Split localSplit = new Split("foo", new TestSplitLocal());
         splits.add(localSplit);
-        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits);
+        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits, taskMap.values());
         Map.Entry<Node, Split> onlyEntry = Iterables.getOnlyElement(assignments.entries());
         assertEquals(onlyEntry.getKey().getHostAndPort(), localSplit.getAddresses().get(0));
         assertEquals(onlyEntry.getValue(), localSplit);
+    }
+
+    @Test
+    public void testMultipleTasksPerNode()
+    {
+        NodeSchedulerConfig nodeSchedulerConfig = new NodeSchedulerConfig()
+                .setMaxSplitsPerNode(20)
+                .setIncludeCoordinator(false)
+                .setMaxPendingSplitsPerNodePerTask(10);
+
+        NodeScheduler nodeScheduler = new NodeScheduler(nodeManager, nodeSchedulerConfig, nodeTaskMap);
+        NodeScheduler.NodeSelector nodeSelector = nodeScheduler.createNodeSelector("foo");
+        List<Node> nodes = nodeSelector.selectRandomNodes(10);
+        assertEquals(nodes.size(), 3);
+
+        nodeSchedulerConfig.setMultipleTasksPerNodeEnabled(true);
+        nodeScheduler = new NodeScheduler(nodeManager, nodeSchedulerConfig, nodeTaskMap);
+        nodeSelector = nodeScheduler.createNodeSelector("foo");
+        nodes = nodeSelector.selectRandomNodes(9);
+        assertEquals(nodes.size(), 9);
+        Map<String, Integer> counts = new HashMap<>();
+        for (Node node : nodes) {
+            Integer value = counts.get(node.getNodeIdentifier());
+            counts.put(node.getNodeIdentifier(), (value == null ? 0 : value) + 1);
+        }
+        assertEquals(counts.get("other1").intValue(), 3);
+        assertEquals(counts.get("other2").intValue(), 3);
+        assertEquals(counts.get("other3").intValue(), 3);
     }
 
     @Test
@@ -103,7 +131,7 @@ public class TestNodeScheduler
     {
         Set<Split> splits = new HashSet<>();
         splits.add(new Split("foo", new TestSplitRemote()));
-        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits);
+        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits, taskMap.values());
         assertEquals(assignments.size(), 1);
     }
 
@@ -116,7 +144,7 @@ public class TestNodeScheduler
         for (int i = 0; i < 3; i++) {
             splits.add(new Split("foo", new TestSplitRemote()));
         }
-        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits);
+        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits, taskMap.values());
         assertEquals(assignments.entries().size(), 3);
         for (Node node : nodeManager.getActiveDatasourceNodes("foo")) {
             assertTrue(assignments.keySet().contains(node));
@@ -146,7 +174,7 @@ public class TestNodeScheduler
         for (int i = 0; i < 5; i++) {
             splits.add(new Split("foo", new TestSplitRemote()));
         }
-        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits);
+        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits, taskMap.values());
 
         // no split should be assigned to the newNode, as it already has maxNodeSplits assigned to it
         assertFalse(assignments.keySet().contains(newNode));
@@ -174,12 +202,13 @@ public class TestNodeScheduler
         RemoteTask newRemoteTask = remoteTaskFactory.createTableScanTask(newNode, initialSplits.build());
         // Max out pending splits on new node
         taskMap.put(newNode, newRemoteTask);
+        nodeTaskMap.addTask(newNode, newRemoteTask);
 
         Set<Split> splits = new HashSet<>();
         for (int i = 0; i < 5; i++) {
             splits.add(new Split("foo", new TestSplitRemote()));
         }
-        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits);
+        Multimap<Node, Split> assignments = nodeSelector.computeAssignments(splits, taskMap.values());
 
         // no split should be assigned to the newNode, as it already has
         // maxSplitsPerNode + maxSplitsPerNodePerTask assigned to it

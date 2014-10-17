@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.sql.planner.optimizations;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.ColumnHandle;
 import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.block.SortOrder;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.planner.DeterminismEvaluator;
@@ -40,6 +40,7 @@ import com.facebook.presto.sql.planner.plan.TableScanNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
 import com.facebook.presto.sql.planner.plan.TopNNode;
 import com.facebook.presto.sql.planner.plan.UnionNode;
+import com.facebook.presto.sql.planner.plan.UnnestNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.ExpressionRewriter;
@@ -83,7 +84,7 @@ public class UnaliasSymbolReferences
         extends PlanOptimizer
 {
     @Override
-    public PlanNode optimize(PlanNode plan, ConnectorSession session, Map<Symbol, Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
+    public PlanNode optimize(PlanNode plan, Session session, Map<Symbol, Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
     {
         checkNotNull(plan, "plan is null");
         checkNotNull(session, "session is null");
@@ -140,6 +141,17 @@ public class UnaliasSymbolReferences
             PlanNode source = planRewriter.rewrite(node.getSource(), context);
             List<Symbol> symbols = ImmutableList.copyOf(ImmutableSet.copyOf(canonicalize(node.getDistinctSymbols())));
             return new MarkDistinctNode(node.getId(), source, canonicalize(node.getMarkerSymbol()), symbols);
+        }
+
+        @Override
+        public PlanNode rewriteUnnest(UnnestNode node, Void context, PlanRewriter<Void> planRewriter)
+        {
+            PlanNode source = planRewriter.rewrite(node.getSource(), context);
+            ImmutableMap.Builder<Symbol, List<Symbol>> builder = ImmutableMap.builder();
+            for (Map.Entry<Symbol, List<Symbol>> entry : node.getUnnestSymbols().entrySet()) {
+                builder.put(canonicalize(entry.getKey()), canonicalize(entry.getValue()));
+            }
+            return new UnnestNode(node.getId(), source, canonicalize(node.getReplicateSymbols()), builder.build());
         }
 
         @Override

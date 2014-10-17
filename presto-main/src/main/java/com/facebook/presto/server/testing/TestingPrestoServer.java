@@ -14,6 +14,7 @@
 package com.facebook.presto.server.testing;
 
 import com.facebook.presto.connector.ConnectorManager;
+import com.facebook.presto.execution.QueryManager;
 import com.facebook.presto.metadata.AllNodes;
 import com.facebook.presto.metadata.InternalNodeManager;
 import com.facebook.presto.metadata.Metadata;
@@ -78,6 +79,7 @@ public class TestingPrestoServer
     private final InternalNodeManager nodeManager;
     private final ServiceSelectorManager serviceSelectorManager;
     private final Announcer announcer;
+    private QueryManager queryManager;
 
     public TestingPrestoServer()
             throws Exception
@@ -147,6 +149,8 @@ public class TestingPrestoServer
 
         lifeCycleManager = injector.getInstance(LifeCycleManager.class);
 
+        queryManager = injector.getInstance(QueryManager.class);
+
         pluginManager = injector.getInstance(PluginManager.class);
 
         connectorManager = injector.getInstance(ConnectorManager.class);
@@ -156,6 +160,8 @@ public class TestingPrestoServer
         nodeManager = injector.getInstance(InternalNodeManager.class);
         serviceSelectorManager = injector.getInstance(ServiceSelectorManager.class);
         announcer = injector.getInstance(Announcer.class);
+
+        announcer.forceAnnounce();
 
         refreshNodes();
     }
@@ -179,6 +185,11 @@ public class TestingPrestoServer
     public void installPlugin(Plugin plugin)
     {
         pluginManager.installPlugin(plugin);
+    }
+
+    public QueryManager getQueryManager()
+    {
+        return queryManager;
     }
 
     public void createCatalog(String catalogName, String connectorName)
@@ -248,6 +259,7 @@ public class TestingPrestoServer
         // update announcement
         announcer.removeServiceAnnouncement(announcement.getId());
         announcer.addServiceAnnouncement(serviceAnnouncement(announcement.getType()).addProperties(properties).build());
+        announcer.forceAnnounce();
     }
 
     private static ServiceAnnouncement getPrestoAnnouncement(Set<ServiceAnnouncement> announcements)

@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.QualifiedTableName;
 import com.facebook.presto.metadata.ViewDefinition;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.sql.analyzer.Analysis;
 import com.facebook.presto.sql.analyzer.Analyzer;
@@ -53,6 +53,7 @@ public class CreateViewTask
     private final List<PlanOptimizer> planOptimizers;
     private final boolean experimentalSyntaxEnabled;
     private final boolean distributedIndexJoinsEnabled;
+    private final boolean distributedJoinsEnabled;
 
     @Inject
     public CreateViewTask(JsonCodec<ViewDefinition> codec, SqlParser sqlParser, List<PlanOptimizer> planOptimizers, FeaturesConfig featuresConfig)
@@ -63,10 +64,11 @@ public class CreateViewTask
         checkNotNull(featuresConfig, "featuresConfig is null");
         this.experimentalSyntaxEnabled = featuresConfig.isExperimentalSyntaxEnabled();
         this.distributedIndexJoinsEnabled = featuresConfig.isDistributedIndexJoinsEnabled();
+        this.distributedJoinsEnabled = featuresConfig.isDistributedJoinsEnabled();
     }
 
     @Override
-    public void execute(CreateView statement, ConnectorSession session, Metadata metadata)
+    public void execute(CreateView statement, Session session, Metadata metadata)
     {
         QualifiedTableName name = createQualifiedTableName(session, statement.getName());
 
@@ -82,9 +84,9 @@ public class CreateViewTask
         metadata.createView(session, name, data, statement.isReplace());
     }
 
-    public Analysis analyzeStatement(Statement statement, ConnectorSession session, Metadata metadata)
+    public Analysis analyzeStatement(Statement statement, Session session, Metadata metadata)
     {
-        QueryExplainer explainer = new QueryExplainer(session, planOptimizers, metadata, sqlParser, experimentalSyntaxEnabled, distributedIndexJoinsEnabled);
+        QueryExplainer explainer = new QueryExplainer(session, planOptimizers, metadata, sqlParser, experimentalSyntaxEnabled, distributedIndexJoinsEnabled, distributedJoinsEnabled);
         Analyzer analyzer = new Analyzer(session, metadata, sqlParser, Optional.of(explainer), experimentalSyntaxEnabled);
         return analyzer.analyze(statement);
     }
@@ -112,10 +114,10 @@ public class CreateViewTask
             parsed = sqlParser.createStatement(sql);
         }
         catch (ParsingException e) {
-            throw new PrestoException(INTERNAL_ERROR.toErrorCode(), "Formatted query does not parse: " + query);
+            throw new PrestoException(INTERNAL_ERROR, "Formatted query does not parse: " + query);
         }
         if (!query.equals(parsed)) {
-            throw new PrestoException(INTERNAL_ERROR.toErrorCode(), "Query does not round-trip: " + query);
+            throw new PrestoException(INTERNAL_ERROR, "Query does not round-trip: " + query);
         }
 
         return sql;

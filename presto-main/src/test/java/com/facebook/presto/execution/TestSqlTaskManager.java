@@ -35,8 +35,8 @@ import java.net.URI;
 import java.util.concurrent.TimeUnit;
 
 import static com.facebook.presto.OutputBuffers.INITIAL_EMPTY_OUTPUT_BUFFERS;
+import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.execution.TaskTestUtils.PLAN_FRAGMENT;
-import static com.facebook.presto.execution.TaskTestUtils.SESSION;
 import static com.facebook.presto.execution.TaskTestUtils.SPLIT;
 import static com.facebook.presto.execution.TaskTestUtils.TABLE_SCAN_NODE_ID;
 import static com.facebook.presto.execution.TaskTestUtils.createTestingPlanner;
@@ -49,6 +49,7 @@ import static org.testng.Assert.assertNull;
 public class TestSqlTaskManager
 {
     private static final TaskId TASK_ID = new TaskId("query", "stage", "task");
+    public static final TaskId OUT = new TaskId("query", "stage", "out");
 
     private final TaskExecutor taskExecutor;
 
@@ -71,7 +72,7 @@ public class TestSqlTaskManager
     {
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = TASK_ID;
-            TaskInfo taskInfo = sqlTaskManager.updateTask(SESSION,
+            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
                     taskId,
                     PLAN_FRAGMENT,
                     ImmutableList.<TaskSource>of(),
@@ -81,7 +82,7 @@ public class TestSqlTaskManager
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
             assertEquals(taskInfo.getState(), TaskState.RUNNING);
 
-            taskInfo = sqlTaskManager.updateTask(SESSION,
+            taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
                     taskId,
                     PLAN_FRAGMENT,
                     ImmutableList.of(new TaskSource(TABLE_SCAN_NODE_ID, ImmutableSet.<ScheduledSplit>of(), true)),
@@ -99,22 +100,22 @@ public class TestSqlTaskManager
     {
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = TASK_ID;
-            TaskInfo taskInfo = sqlTaskManager.updateTask(SESSION,
+            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
                     taskId,
                     PLAN_FRAGMENT,
                     ImmutableList.of(new TaskSource(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), true)),
-                    INITIAL_EMPTY_OUTPUT_BUFFERS.withBuffer("out", new UnpartitionedPagePartitionFunction()).withNoMoreBufferIds());
+                    INITIAL_EMPTY_OUTPUT_BUFFERS.withBuffer(OUT, new UnpartitionedPagePartitionFunction()).withNoMoreBufferIds());
             assertEquals(taskInfo.getState(), TaskState.RUNNING);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
             assertEquals(taskInfo.getState(), TaskState.RUNNING);
 
-            BufferResult results = sqlTaskManager.getTaskResults(taskId, "out", 0, new DataSize(1, Unit.MEGABYTE)).get();
+            BufferResult results = sqlTaskManager.getTaskResults(taskId, OUT, 0, new DataSize(1, Unit.MEGABYTE)).get();
             assertEquals(results.isBufferClosed(), false);
             assertEquals(results.getPages().size(), 1);
             assertEquals(results.getPages().get(0).getPositionCount(), 1);
 
-            results = sqlTaskManager.getTaskResults(taskId, "out", results.getToken() + results.getPages().size(), new DataSize(1, Unit.MEGABYTE)).get();
+            results = sqlTaskManager.getTaskResults(taskId, OUT, results.getToken() + results.getPages().size(), new DataSize(1, Unit.MEGABYTE)).get();
             assertEquals(results.isBufferClosed(), true);
             assertEquals(results.getPages().size(), 0);
 
@@ -131,7 +132,7 @@ public class TestSqlTaskManager
     {
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = TASK_ID;
-            TaskInfo taskInfo = sqlTaskManager.updateTask(SESSION,
+            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
                     taskId,
                     PLAN_FRAGMENT,
                     ImmutableList.<TaskSource>of(),
@@ -159,17 +160,17 @@ public class TestSqlTaskManager
     {
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = TASK_ID;
-            TaskInfo taskInfo = sqlTaskManager.updateTask(SESSION,
+            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
                     taskId,
                     PLAN_FRAGMENT,
                     ImmutableList.of(new TaskSource(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), true)),
-                    INITIAL_EMPTY_OUTPUT_BUFFERS.withBuffer("out", new UnpartitionedPagePartitionFunction()).withNoMoreBufferIds());
+                    INITIAL_EMPTY_OUTPUT_BUFFERS.withBuffer(OUT, new UnpartitionedPagePartitionFunction()).withNoMoreBufferIds());
             assertEquals(taskInfo.getState(), TaskState.RUNNING);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
             assertEquals(taskInfo.getState(), TaskState.RUNNING);
 
-            sqlTaskManager.abortTaskResults(taskId, "out");
+            sqlTaskManager.abortTaskResults(taskId, OUT);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId, taskInfo.getState()).get(1, TimeUnit.SECONDS);
             assertEquals(taskInfo.getState(), TaskState.FINISHED);
@@ -186,7 +187,7 @@ public class TestSqlTaskManager
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig().setInfoMaxAge(new Duration(5, TimeUnit.MILLISECONDS)))) {
             TaskId taskId = TASK_ID;
 
-            TaskInfo taskInfo = sqlTaskManager.updateTask(SESSION,
+            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
                     taskId,
                     PLAN_FRAGMENT,
                     ImmutableList.<TaskSource>of(),
